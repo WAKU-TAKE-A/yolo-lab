@@ -1,0 +1,36 @@
+# Python environment
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# YOLO-Lab generated artifacts
+runs/
+models/
+datasets/
+
+# Dual-model handoff workspace
+dual-model-operation-kit/
+
+# Downloaded sample assets
+samples/
+
+# Model and runtime binaries
+*.pt
+*.pth
+*.onnx
+*.engine
+*.tflite
+*.mlpackage
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+.pytest_cache/
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

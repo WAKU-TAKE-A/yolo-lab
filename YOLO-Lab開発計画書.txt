@@ -1,0 +1,1516 @@
+# YOLO-Lab 開発計画書
+作成日: 2026-06-05
+
+## 1. 背景
+
+YOLO / ONNX / GPU 環境の検証を行う際、これまでは都度その場限りの Python スクリプトを作成したり、毎回異なる手順で評価したりしていた。
+
+その結果、以下の問題が発生している。
+
+- 毎回 YOLO / ONNX / CUDA / GPU まわりを調べ直している
+- 生成AIに依頼しても、前提情報や環境情報が不足し、判断がぶれる
+- 評価結果・推論画像・環境情報が一貫した形式で残らない
+- モデルやONNXの検証が、その場限りの作業になり再利用できない
+- GUIアプリを作っても、入力画面中心の作りでは形骸化しやすい
+
+本プロジェクトでは、YOLO便利ツールではなく、以下を目的とする。
+
+```text
+生成AIがYOLO/ONNX検証を一貫した手順で実行するための共通実行基盤
+````
+
+主役はGUIや便利コマンド集ではなく、共通化された評価・検証ランナーである。
+
+---
+
+## 2. 基本方針
+
+### 2.1 目的
+
+以下を実現する。
+
+```text
+その場限りのPythonスクリプトで確認しない。
+毎回違う方法で評価しない。
+YOLO/ONNX/GPU環境の確認を共通化する。
+生成AIが同じ作法で実行・記録・比較できるようにする。
+必要なら画像結果も人間が確認できるようにする。
+```
+
+### 2.2 生成AIファースト
+
+このツールは、人間が細かくGUI操作することを主目的にしない。
+
+主な利用者は以下の2者である。
+
+```text
+生成AI:
+  コマンドを実行し、JSON/Markdown/画像結果を読み、次の判断を行う
+
+人間:
+  必要に応じて summary.md や annotated 画像を見る
+```
+
+したがって、すべての実行結果は以下の形式で残す。
+
+```text
+生成AI向け:
+  JSON
+
+人間向け:
+  Markdown
+  annotated画像
+  必要に応じてHTML
+```
+
+---
+
+## 3. スコープ
+
+本プロジェクトは YOLO 用である。
+
+名称は以下とする。
+
+```text
+プロジェクト名:
+  yolo-lab
+
+入口スクリプト:
+  ylab.py
+
+初期段階の単体スクリプト:
+  pc-check.py
+```
+
+---
+
+## 4. 3本柱
+
+必要な機能は大きく3系統に分ける。
+
+```text
+1. pc
+   PC環境・GPU・CUDA・PyTorch・ONNXRuntime確認
+
+2. yolo
+   Ultralytics YOLOモデルの推論・評価・学習・エクスポート
+
+3. onnx
+   ONNXモデルの構造確認・推論・YOLO結果との比較
+```
+
+この3本柱に絞り、不要な便利機能を増やさない。
+
+---
+
+## 5. 推奨ディレクトリ構成
+
+最終的な構成案は以下。
+
+```text
+yolo-lab/
+  ylab.py
+
+  ylab/
+    cli.py
+
+    core/
+      run_context.py
+      env_info.py
+      artifact.py
+      image_io.py
+      report.py
+
+    commands/
+      pc.py
+      yolo.py
+      onnx.py
+
+    adapters/
+      ultralytics_adapter.py
+      onnxruntime_adapter.py
+
+    viewers/
+      open_result.py
+
+  runs/
+  configs/
+  samples/
+```
+
+### 5.1 各ファイルの役割
+
+```text
+ylab.py
+  CLI入口。
+  python ylab.py pc check のように呼び出す。
+
+ylab/cli.py
+  argparse などでCLI引数を処理する。
+
+ylab/core/run_context.py
+  実行ごとの run_id、出力ディレクトリ、共通メタ情報を管理する。
+
+ylab/core/env_info.py
+  Python、OS、GPU、CUDA、PyTorch、ONNXRuntime 等の環境情報を収集する。
+
+ylab/core/artifact.py
+  run.json、command.txt、summary.md、各種JSONの保存処理を共通化する。
+
+ylab/core/image_io.py
+  画像読み込み、保存、annotated画像出力を共通化する。
+
+ylab/core/report.py
+  Markdownレポート生成を共通化する。
+
+ylab/commands/pc.py
+  PC環境チェック。
+
+ylab/commands/yolo.py
+  YOLO推論、評価、学習、ONNX export。
+
+ylab/commands/onnx.py
+  ONNX構造確認、生推論、比較。
+
+ylab/adapters/ultralytics_adapter.py
+  Ultralytics APIのラッパー。
+
+ylab/adapters/onnxruntime_adapter.py
+  ONNX Runtime APIのラッパー。
+
+ylab/viewers/open_result.py
+  summary.md、annotated画像フォルダ、report.html などを開く。
+```
+
+---
+
+## 6. 初期フェーズでは pc-check.py から開始する
+
+最初から ylab.py 全体を作らず、まずは `pc-check.py` を作る。
+
+理由:
+
+```text
+YOLO/ONNX検証の前提はPC環境である。
+GPU、CUDA、PyTorch、ONNXRuntimeの状態が分からないと、以降の検証結果を解釈できない。
+pc-check.py は単体でも価値があり、後で ylab.py pc check に統合できる。
+```
+
+初期構成は以下。
+
+```text
+yolo-lab/
+  .venv/
+  pc-check.py
+  requirements.txt
+  runs/
+    pc_check/
+```
+
+---
+
+# 7. pc-check.py 仕様
+
+## 7.1 目的
+
+`pc-check.py` の目的は以下。
+
+```text
+YOLO / ONNX 検証を始める前に、
+このPC環境で何が使えるかを機械判定できるようにする。
+```
+
+特に以下を確認する。
+
+```text
+Python / venv
+OS / CPU / RAM
+NVIDIA GPU
+NVIDIA Driver / CUDA
+PyTorch
+ONNX / ONNX Runtime
+Ultralytics / YOLO
+OpenCV / 画像処理系
+```
+
+---
+
+## 7.2 実行方法
+
+基本実行:
+
+```bash
+python pc-check.py
+```
+
+モデルロードテストあり:
+
+```bash
+python pc-check.py --model-test yolo11n.pt
+```
+
+出力先指定:
+
+```bash
+python pc-check.py --out runs/pc_check/test01
+```
+
+dry-run:
+
+```bash
+python pc-check.py --dry-run
+```
+
+---
+
+## 7.3 出力先
+
+デフォルトではタイムスタンプ付きディレクトリに出力する。
+
+```text
+runs/pc_check/20260605_203000/
+  env.json
+  env.md
+  command.txt
+```
+
+### 7.3.1 env.json
+
+生成AIが読むための機械可読ファイル。
+
+```json
+{
+  "status": "WARN",
+  "python": {},
+  "system": {},
+  "nvidia": {},
+  "cuda_driver": {},
+  "torch": {},
+  "onnx": {},
+  "onnxruntime": {},
+  "ultralytics": {},
+  "opencv": {},
+  "packages": {},
+  "warnings": [],
+  "errors": []
+}
+```
+
+### 7.3.2 env.md
+
+人間が読むためのレポート。
+
+```markdown
+# PC Check Report
+
+## Overall Status
+WARN
+
+## Python
+- Version: 3.11.9
+- venv: OK
+
+## GPU
+- NVIDIA GPU: RTX 4060
+- VRAM: 8GB
+
+## PyTorch
+- Version: 2.5.1+cu121
+- CUDA available: OK
+
+## ONNX Runtime
+- Version: 1.18.1
+- Providers:
+  - CUDAExecutionProvider
+  - CPUExecutionProvider
+
+## Warnings
+- nvcc not found. Usually OK unless building CUDA extensions.
+```
+
+### 7.3.3 command.txt
+
+再現用に実行コマンドを保存する。
+
+```text
+python pc-check.py
+```
+
+---
+
+## 7.4 標準出力
+
+標準出力は短くする。
+
+例:
+
+```text
+PC check completed.
+
+Status: WARN
+
+Run directory:
+  runs/pc_check/20260605_203000
+
+Main files:
+  env.json
+  env.md
+
+Warnings:
+  - nvcc not found. Usually OK unless building CUDA extensions.
+```
+
+標準出力に大量の診断ログを出さない。
+詳細は `env.json` と `env.md` に保存する。
+
+---
+
+## 7.5 判定レベル
+
+`status` は3段階。
+
+```text
+OK
+WARN
+ERROR
+```
+
+意味:
+
+```text
+OK:
+  YOLO/ONNX検証に必要な主要環境が揃っている
+
+WARN:
+  動く可能性はあるが、注意点がある
+  例:
+    - venv外
+    - ONNXRuntime GPUなし
+    - nvccなし
+    - VRAM少なめ
+    - NVIDIA GPUなしだがCPU推論は可能
+
+ERROR:
+  主要機能が使えない
+  例:
+    - torch import不可
+    - ultralytics import不可
+    - onnxruntime import不可
+    - Python versionが古すぎる
+```
+
+---
+
+# 8. pc-check.py で確認する具体項目
+
+## 8.1 Python / venv
+
+チェック項目:
+
+```text
+Python executable
+Python version
+venv内で動いているか
+pip version
+site-packages path
+sys.prefix
+sys.base_prefix
+```
+
+venv判定:
+
+```python
+sys.prefix != sys.base_prefix
+```
+
+出力例:
+
+```json
+{
+  "python": {
+    "executable": "C:\\work\\yolo-lab\\.venv\\Scripts\\python.exe",
+    "version": "3.11.9",
+    "is_venv": true,
+    "prefix": "C:\\work\\yolo-lab\\.venv",
+    "base_prefix": "C:\\Python311",
+    "pip_version": "24.2",
+    "site_packages": [
+      "C:\\work\\yolo-lab\\.venv\\Lib\\site-packages"
+    ]
+  }
+}
+```
+
+判定:
+
+```text
+OK:
+  venv内で実行されている
+
+WARN:
+  venv外で実行されている
+
+ERROR:
+  Python version が古すぎる
+```
+
+推奨:
+
+```text
+Python 3.10以上
+できれば Python 3.11
+```
+
+---
+
+## 8.2 OS / CPU / RAM
+
+チェック項目:
+
+```text
+OS名
+OS version
+architecture
+CPU論理コア数
+RAM容量
+```
+
+出力例:
+
+```json
+{
+  "system": {
+    "os": "Windows",
+    "os_version": "10.0.22631",
+    "architecture": "64bit",
+    "cpu_count": 16,
+    "memory_gb": 31.7
+  }
+}
+```
+
+判定:
+
+```text
+OK:
+  64bit OS
+  RAM 16GB以上
+
+WARN:
+  RAM 8GB未満
+```
+
+備考:
+
+```text
+YOLO推論だけなら8GBでも動く可能性はある。
+学習や大量画像処理を考えるなら16GB以上が望ましい。
+```
+
+---
+
+## 8.3 NVIDIA GPU
+
+`nvidia-smi` を使用して確認する。
+
+チェック項目:
+
+```text
+nvidia-smi が使えるか
+GPU名
+GPU数
+VRAM容量
+GPU使用率
+VRAM使用量
+```
+
+出力例:
+
+```json
+{
+  "nvidia": {
+    "nvidia_smi_available": true,
+    "gpus": [
+      {
+        "index": 0,
+        "name": "NVIDIA GeForce RTX 4060",
+        "memory_total_mb": 8188,
+        "memory_used_mb": 1024,
+        "utilization_gpu_percent": 5
+      }
+    ]
+  }
+}
+```
+
+判定:
+
+```text
+OK:
+  nvidia-smi が使える
+  GPUが1つ以上ある
+  VRAM 8GB以上
+
+WARN:
+  VRAM 6GB未満
+  nvidia-smi はあるがGPU情報が取れない
+
+INFO:
+  NVIDIA GPUなし
+```
+
+備考:
+
+```text
+CPU推論だけなら NVIDIA GPUなしでも ERROR にはしない。
+YOLO学習や高速推論が目的の場合は WARN とする。
+```
+
+---
+
+## 8.4 NVIDIA Driver / CUDA
+
+ここは混乱しやすいため、複数の情報を分けて記録する。
+
+確認するもの:
+
+```text
+NVIDIA Driver が対応している CUDA version
+PyTorch がビルドされた CUDA version
+実際に torch.cuda が使えるか
+ONNXRuntime GPU provider が使えるか
+CUDA Toolkit / nvcc が入っているか
+```
+
+チェック項目:
+
+```text
+NVIDIA driver version
+nvidia-smi CUDA version
+nvcc が使えるか
+nvcc version
+CUDA_PATH
+```
+
+出力例:
+
+```json
+{
+  "cuda_driver": {
+    "driver_version": "555.85",
+    "nvidia_smi_cuda_version": "12.5",
+    "nvcc_available": false,
+    "nvcc_version": null,
+    "cuda_path": null
+  }
+}
+```
+
+判定:
+
+```text
+OK:
+  nvidia-smi が使える
+  torch.cuda.is_available() が true
+
+INFO:
+  nvcc がない
+```
+
+重要な注意:
+
+```text
+nvidia-smi に出る CUDA Version は、
+ドライバが対応している最大CUDA系統であり、
+ローカルに CUDA Toolkit が入っていることを意味しない。
+
+YOLO / PyTorch 実行だけなら nvcc は必須ではない。
+PyTorch の CUDA 版 wheel を使う場合、CUDA Toolkit 未インストールでも動くことがある。
+```
+
+---
+
+## 8.5 PyTorch
+
+YOLO実行における最重要項目。
+
+チェック項目:
+
+```text
+torch import可能か
+torch version
+torch.version.cuda
+torch.cuda.is_available()
+torch.cuda.device_count()
+torch.cuda.get_device_name()
+cuDNN version
+GPU tensor計算が実際に通るか
+```
+
+GPU tensor test:
+
+```python
+x = torch.tensor([1.0], device="cuda")
+y = x + 1
+```
+
+出力例:
+
+```json
+{
+  "torch": {
+    "installed": true,
+    "version": "2.5.1+cu121",
+    "compiled_cuda": "12.1",
+    "cuda_available": true,
+    "device_count": 1,
+    "devices": [
+      {
+        "index": 0,
+        "name": "NVIDIA GeForce RTX 4060"
+      }
+    ],
+    "cudnn_version": 90100,
+    "cuda_tensor_test": true
+  }
+}
+```
+
+判定:
+
+```text
+OK:
+  torch import OK
+  torch.cuda.is_available true
+  cuda_tensor_test true
+
+WARN:
+  torchは入っているがCPU版
+  NVIDIA GPUはあるがtorch.cuda不可
+
+ERROR:
+  torch import不可
+```
+
+---
+
+## 8.6 ONNX / ONNX Runtime
+
+C# / ONNXRuntime へ持っていく前の検証基盤として必須。
+
+チェック項目:
+
+```text
+onnx import可能か
+onnx version
+onnxruntime import可能か
+onnxruntime version
+available providers
+CUDAExecutionProvider があるか
+CPUExecutionProvider があるか
+簡単なInferenceSession作成テスト
+```
+
+出力例:
+
+```json
+{
+  "onnx": {
+    "installed": true,
+    "version": "1.17.0"
+  },
+  "onnxruntime": {
+    "installed": true,
+    "version": "1.18.1",
+    "providers": [
+      "CUDAExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "cuda_provider_available": true,
+    "cpu_provider_available": true
+  }
+}
+```
+
+判定:
+
+```text
+OK:
+  onnxruntime import OK
+  CUDAExecutionProviderあり
+
+WARN:
+  onnxruntime はあるが CPUExecutionProvider のみ
+
+ERROR:
+  onnxruntime import不可
+```
+
+注意:
+
+```text
+onnxruntime と onnxruntime-gpu は別物。
+GPUでONNXを回したい場合は、基本的に onnxruntime-gpu が必要。
+```
+
+---
+
+## 8.7 Ultralytics / YOLO
+
+YOLO用環境チェックなので `pc-check.py` に含める。
+
+チェック項目:
+
+```text
+ultralytics import可能か
+ultralytics version
+YOLO class import可能か
+任意でモデルロードテスト
+```
+
+軽量チェック:
+
+```python
+import ultralytics
+from ultralytics import YOLO
+```
+
+重いチェック:
+
+```bash
+python pc-check.py --model-test yolo11n.pt
+```
+
+出力例:
+
+```json
+{
+  "ultralytics": {
+    "installed": true,
+    "version": "8.x.x",
+    "yolo_class_import": true,
+    "model_test": {
+      "enabled": true,
+      "model": "yolo11n.pt",
+      "load_ok": true
+    }
+  }
+}
+```
+
+判定:
+
+```text
+OK:
+  ultralytics import OK
+  YOLO class import OK
+
+WARN:
+  ultralyticsはあるがモデルロード未確認
+
+ERROR:
+  ultralytics import不可
+```
+
+備考:
+
+```text
+モデルロードテストはデフォルトでは実行しない。
+理由は、初回ロード時にモデルダウンロードが発生する可能性があるため。
+```
+
+---
+
+## 8.8 OpenCV / 画像処理系
+
+YOLO結果画像の保存・描画・確認に必要。
+
+チェック項目:
+
+```text
+cv2 import可能か
+opencv version
+画像読み込みテスト
+画像書き込みテスト
+```
+
+出力例:
+
+```json
+{
+  "opencv": {
+    "installed": true,
+    "version": "4.10.0",
+    "image_io_test": true
+  }
+}
+```
+
+判定:
+
+```text
+OK:
+  cv2 import OK
+  画像read/write OK
+
+ERROR:
+  cv2 import不可
+```
+
+---
+
+## 8.9 補助パッケージ
+
+初期版で存在確認しておくとよいもの。
+
+```text
+numpy
+pandas
+Pillow
+matplotlib
+pyyaml
+tqdm
+psutil
+rich
+```
+
+出力例:
+
+```json
+{
+  "packages": {
+    "numpy": "1.26.4",
+    "opencv-python": "4.10.0",
+    "pillow": "10.4.0",
+    "pyyaml": "6.0.2",
+    "psutil": "5.9.8"
+  }
+}
+```
+
+これらは import 不可でも即 ERROR にしない。
+機能ごとに必要になった段階で WARN / ERROR にする。
+
+---
+
+# 9. requirements.txt 初期案
+
+GPU利用を想定する場合。
+
+```text
+ultralytics
+onnx
+onnxruntime-gpu
+opencv-python
+psutil
+pyyaml
+numpy
+pandas
+pillow
+matplotlib
+tqdm
+rich
+```
+
+CPUのみの環境も考える場合は、`onnxruntime-gpu` ではなく `onnxruntime` を使う構成もあり得る。
+
+ただし、本プロジェクトでは GPU / CUDA / ONNXRuntime GPU の確認が重要なため、初期案では `onnxruntime-gpu` を前提とする。
+
+---
+
+# 10. venv構築方針
+
+基本的に Python は venv で構築する。
+
+Windows想定の例:
+
+```bat
+python -m venv .venv
+.venv\Scripts\activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+python pc-check.py
+```
+
+PowerShell想定:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+python pc-check.py
+```
+
+venv外で `pc-check.py` が実行された場合は `WARN` にする。
+
+---
+
+# 11. YOLO系コマンド計画
+
+## 11.1 yolo predict
+
+推論。
+
+```bash
+python ylab.py yolo predict ^
+  --model yolo26n-seg.pt ^
+  --source input/images ^
+  --task segment ^
+  --out runs/yolo_predict/test01
+```
+
+入力:
+
+```text
+画像1枚
+画像フォルダ
+```
+
+出力:
+
+```text
+runs/yolo_predict/test01/
+  run.json
+  env.json
+  command.txt
+  predictions.json
+  predictions.csv
+  summary.md
+  annotated/
+```
+
+重要点:
+
+```text
+annotated/ は必須。
+生成AIファーストでも、人間が結果画像を確認できる必要がある。
+```
+
+---
+
+## 11.2 yolo val
+
+アノテーション済みデータセットの評価。
+
+```bash
+python ylab.py yolo val ^
+  --model best.pt ^
+  --data datasets/suitcase.yaml ^
+  --out runs/yolo_val/test01
+```
+
+出力:
+
+```text
+metrics.json
+metrics.md
+confusion_matrix.png
+sample_predictions/
+```
+
+---
+
+## 11.3 yolo train
+
+学習。
+
+```bash
+python ylab.py yolo train ^
+  --model yolo26n-seg.pt ^
+  --data datasets/suitcase.yaml ^
+  --epochs 100 ^
+  --imgsz 640 ^
+  --out runs/yolo_train/suitcase01
+```
+
+出力:
+
+```text
+train_args.json
+command.txt
+env.json
+results.csv
+weights/
+summary.md
+```
+
+重要点:
+
+```text
+学習そのものより、条件を必ず記録することが重要。
+```
+
+---
+
+## 11.4 yolo export-onnx
+
+YOLOからONNXへエクスポート。
+
+```bash
+python ylab.py yolo export-onnx ^
+  --model runs/yolo_train/suitcase01/weights/best.pt ^
+  --imgsz 640 ^
+  --opset 17 ^
+  --out runs/export/suitcase01
+```
+
+YOLO26系で従来型出力を使いたい場合:
+
+```bash
+python ylab.py yolo export-onnx ^
+  --model best.pt ^
+  --imgsz 640 ^
+  --opset 17 ^
+  --end2end false ^
+  --out runs/export/suitcase01_e2e_false
+```
+
+出力:
+
+```text
+model.onnx
+export.json
+onnx_shapes.json
+summary.md
+```
+
+---
+
+# 12. ONNX系コマンド計画
+
+## 12.1 onnx inspect
+
+ONNXモデル構造確認。
+
+```bash
+python ylab.py onnx inspect ^
+  --model model.onnx ^
+  --out runs/onnx_inspect/test01
+```
+
+見る内容:
+
+```text
+入力名
+入力shape
+入力dtype
+出力名
+出力shape
+opset
+provider候補
+```
+
+出力:
+
+```text
+onnx_info.json
+onnx_info.md
+```
+
+C#実装前に必須の工程。
+
+---
+
+## 12.2 onnx raw-predict
+
+ONNX Runtimeで生推論を行い、生出力を保存する。
+
+```bash
+python ylab.py onnx raw-predict ^
+  --model model.onnx ^
+  --source input/images ^
+  --out runs/onnx_raw/test01
+```
+
+出力:
+
+```text
+raw_outputs/
+onnx_raw_summary.json
+summary.md
+```
+
+目的:
+
+```text
+ONNXモデルがONNXRuntimeで実行できるか確認する。
+後処理はまだ行わず、生出力のshapeやdtypeを保存する。
+```
+
+---
+
+## 12.3 onnx predict
+
+ONNX推論後、YOLO後処理まで行う。
+
+```bash
+python ylab.py onnx predict ^
+  --model model.onnx ^
+  --source input/images ^
+  --task segment ^
+  --out runs/onnx_predict/test01
+```
+
+出力:
+
+```text
+raw_outputs/
+predictions.json
+summary.md
+annotated/
+```
+
+注意:
+
+```text
+ONNXはモデルによって後処理が違う。
+YOLOv8 / YOLO26 / detect / seg / end2end で出力形式が異なる。
+そのため、初期MVPでは onnx predict は後回しにし、onnx raw-predict を先に実装する。
+```
+
+---
+
+## 12.4 onnx compare
+
+PyTorch YOLO推論とONNX推論の比較。
+
+```bash
+python ylab.py onnx compare ^
+  --pt best.pt ^
+  --onnx model.onnx ^
+  --source input/images ^
+  --out runs/compare/pt_vs_onnx_01
+```
+
+比較項目:
+
+```text
+検出数
+class
+confidence
+bbox差分
+mask有無
+推論速度
+```
+
+これは後回しでよいが、最終的には重要。
+
+---
+
+# 13. 結果ビューア
+
+GUIアプリ本体は作らない。
+
+必要なのは結果ビューアだけ。
+
+```bash
+python ylab.py open runs/yolo_predict/test01
+```
+
+開く候補:
+
+```text
+summary.md
+annotated画像フォルダ
+report.html
+```
+
+方針:
+
+```text
+入力画面ではなく、結果確認画面に限定する。
+```
+
+この方針により、GUIが形骸化しにくくなる。
+
+---
+
+# 14. 最小MVP
+
+最初に実装するMVPは以下。
+
+```text
+pc check
+yolo predict
+yolo val
+yolo export-onnx
+onnx inspect
+onnx raw-predict
+open
+```
+
+CLIイメージ:
+
+```bash
+python ylab.py pc check
+
+python ylab.py yolo predict --model xxx.pt --source images --out runs/predict/test
+
+python ylab.py yolo val --model xxx.pt --data dataset.yaml --out runs/val/test
+
+python ylab.py yolo export-onnx --model xxx.pt --out runs/export/test
+
+python ylab.py onnx inspect --model xxx.onnx --out runs/inspect/test
+
+python ylab.py onnx raw-predict --model xxx.onnx --source images --out runs/onnx_raw/test
+
+python ylab.py open runs/predict/test
+```
+
+---
+
+# 15. 設計上の最重要ポイント
+
+## 15.1 すべて runs/ に残す
+
+その場限りにしない。
+
+```text
+runs/
+  pc_check/
+  yolo_predict/
+  yolo_val/
+  yolo_train/
+  export/
+  onnx_inspect/
+  onnx_predict/
+  compare/
+```
+
+---
+
+## 15.2 すべての実行に同じファイルを残す
+
+最低限:
+
+```text
+run.json
+command.txt
+env.json
+summary.md
+```
+
+推論なら追加:
+
+```text
+predictions.json
+annotated/
+```
+
+ONNX inspectなら追加:
+
+```text
+onnx_info.json
+```
+
+---
+
+## 15.3 生成AIが読める形式にする
+
+人間向け:
+
+```text
+summary.md
+annotated画像
+```
+
+生成AI向け:
+
+```text
+run.json
+env.json
+predictions.json
+onnx_info.json
+metrics.json
+```
+
+---
+
+## 15.4 CLIの標準出力は短くする
+
+例:
+
+```text
+OK: yolo predict completed.
+
+Run directory:
+  runs/yolo_predict/20260605_203000_yolo26n_seg
+
+Main files:
+  summary.md
+  predictions.json
+  annotated/
+```
+
+詳細はファイルに保存する。
+
+---
+
+## 15.5 dry-runは全コマンド共通
+
+例:
+
+```bash
+python ylab.py yolo predict ... --dry-run
+```
+
+dry-runで行うこと:
+
+```text
+実行予定を表示
+入力ファイル存在確認
+出力先確認
+上書きリスク確認
+モデルファイル存在確認
+環境チェックの簡易結果表示
+```
+
+dry-runでは、実際の推論・学習・エクスポート・ファイル変更を行わない。
+
+---
+
+# 16. 実装順序
+
+発散を防ぐため、以下の順に進める。
+
+```text
+1. pc-check.py
+2. 共通runディレクトリ作成
+3. yolo predict
+4. summary.md / predictions.json / annotated画像保存
+5. onnx inspect
+6. yolo export-onnx
+7. onnx raw-predict
+8. ylab.py への統合
+9. yolo val
+10. open
+11. onnx compare
+12. yolo train
+```
+
+最初に学習機能へ進まない。
+まずは評価・検証・記録の基盤を作る。
+
+---
+
+# 17. 最初の実装タスク: pc-check.py
+
+Codexで最初に実装する対象は `pc-check.py`。
+
+## 17.1 必須要件
+
+```text
+- Python 3.10以上を想定
+- venv内実行を推奨
+- Windows対応
+- UTF-8でファイル出力
+- runs/pc_check/<timestamp>/ に結果保存
+- env.json / env.md / command.txt を出力
+- status は OK / WARN / ERROR
+- import失敗は握りつぶさず、JSONに記録する
+- 標準出力は短くする
+```
+
+## 17.2 チェック対象
+
+```text
+Python / venv
+OS / CPU / RAM
+nvidia-smi
+NVIDIA GPU
+NVIDIA driver / CUDA
+nvcc
+torch
+onnx
+onnxruntime
+ultralytics
+OpenCV
+主要補助パッケージ
+```
+
+## 17.3 CLI引数
+
+```text
+--out
+  出力先を指定する
+
+--model-test
+  Ultralytics YOLOモデルのロードテストを行う
+
+--dry-run
+  実行予定だけ表示し、ファイル保存しない
+
+--json
+  標準出力にもJSON概要を出す
+```
+
+## 17.4 エラー設計
+
+```text
+torch import不可:
+  ERROR
+
+ultralytics import不可:
+  ERROR
+
+onnxruntime import不可:
+  ERROR
+
+venv外:
+  WARN
+
+nvidia-smiなし:
+  WARN または INFO
+  CPU推論のみなら致命的ではない
+
+nvccなし:
+  INFO
+  PyTorch wheel利用では必須ではない
+
+CUDAExecutionProviderなし:
+  WARN
+  ONNX GPU推論には影響あり
+
+OpenCV import不可:
+  ERROR
+  annotated画像出力に必要
+```
+
+---
+
+# 18. 完成条件
+
+`pc-check.py` の初期完成条件は以下。
+
+```text
+1. venv内で python pc-check.py が実行できる
+2. runs/pc_check/<timestamp>/ が作成される
+3. env.json が出力される
+4. env.md が出力される
+5. command.txt が出力される
+6. torch / onnxruntime / ultralytics / cv2 の状態が分かる
+7. NVIDIA GPU / CUDA / provider の状態が分かる
+8. 標準出力が短い
+9. 生成AIが env.json を読めば次の判断ができる
+```
+
+---
+
+# 19. 最終ゴール
+
+本プロジェクトの最初の完成形は以下。
+
+```text
+YOLO/ONNX検証を、生成AIが毎回同じ作法で実行できる。
+PC環境、実行条件、結果、画像を必ず保存できる。
+人間は必要なときだけ結果画像を見る。
+```
+
+これは巨大アプリではない。
+小さな共通実行基盤として作る。
+
+```
+
+まずこの計画書を Codex に渡して、最初の実装対象を **`pc-check.py` のみ** に絞るのが良いです。  
+この段階では `yolo predict` や `onnx inspect` には進まない方が、発散を防げます。
