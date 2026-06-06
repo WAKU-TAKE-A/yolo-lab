@@ -186,7 +186,7 @@ def main():
     fmt_from = args.fmt_from.lower()
     fmt_to = args.fmt_to.lower()
 
-    if (fmt_from, fmt_to) not in [("yolo", "coco"), ("coco", "yolo"), ("labelstudio", "yolo")]:
+    if (fmt_from, fmt_to) not in [("yolo", "coco"), ("coco", "yolo"), ("labelstudio", "yolo"), ("yolo", "labelstudio")]:
         payload["errors"].append(f"Unsupported conversion pair: {fmt_from} -> {fmt_to}")
         die()
 
@@ -606,6 +606,137 @@ def main():
 
         payload["images_copied"] = images_copied
         payload["labels_written"] = labels_written
+        payload["annotations_converted"] = annotations_converted
+
+    elif fmt_from == "yolo" and fmt_to == "labelstudio":
+        # YOLO -> Label Studio implementation
+        if not check_yolo_layout(ds_path):
+            payload["warnings"].append("Dataset path does not look like a standard YOLO dataset.")
+
+        yaml_file = None
+        for f in os.listdir(ds_path):
+            if f.lower() in ["data.yaml", "dataset.yaml"]:
+                yaml_file = f
+                break
+                
+        class_map = {}
+        if yaml_file:
+            try:
+                with open(os.path.join(ds_path, yaml_file), "r", encoding="utf-8") as f:
+                    content = f.read()
+                try:
+                    import yaml
+                    yd = yaml.safe_load(content)
+                except Exception:
+                    yd = parse_yaml_fallback(content)
+                names = yd.get("names", [])
+                if isinstance(names, list):
+                    class_map = {idx: name for idx, name in enumerate(names)}
+                elif isinstance(names, dict):
+                    class_map = {int(k): v for k, v in names.items()}
+            except Exception as e:
+                payload["warnings"].append(f"Failed to read yaml: {e}")
+
+        payload["category_count"] = len(class_map)
+
+        if os.path.exists(out_path) and args.force:
+            try:
+                if os.path.isdir(out_path):
+                    shutil.rmtree(out_path)
+                else:
+                    os.remove(out_path)
+            except Exception as e:
+                payload["errors"].append(f"Failed to remove existing output path: {e}")
+                die()
+        elif os.path.exists(out_path):
+            payload["errors"].append(f"Output path already exists: {args.out}. Use --force to overwrite.")
+            die()
+
+        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+
+        image_paths = find_all_images(ds_path)
+        
+        tasks = []
+        task_id = 1
+        annotations_converted = 0
+
+        for img_path in sorted(image_paths):
+            rel_img = os.path.relpath(img_path, ds_path)
+            rel_img_fwd = rel_img.replace(os.sep, '/')
+            
+            rel_lbl, abs_lbl = find_label_for_image(ds_path, rel_img)
+            
+            results = []
+            
+            if os.path.exists(abs_lbl):
+                try:
+                    with open(abs_lbl, "r", encoding="utf-8") as f:
+                        for line in f:
+                            parts = line.strip().split()
+                            if len(parts) >= 5:
+                                cid = int(parts[0])
+                                xc = float(parts[1])
+                                yc = float(parts[2])
+                                w = float(parts[3])
+                                h = float(parts[4])
+                                
+                                label_name = class_map.get(cid, f"class_{cid}")
+                                
+                                x_pct = (xc - w / 2.0) * 100.0
+                                y_pct = (yc - h / 2.0) * 100.0
+                                w_pct = w * 100.0
+                                h_pct = h * 100.0
+                                
+                                x_pct = round(x_pct, 4)
+                                y_pct = round(y_pct, 4)
+                                w_pct = round(w_pct, 4)
+                                h_pct = round(h_pct, 4)
+
+                                results.append({
+                                    "original_width": 100,
+                                    "original_height": 100,
+                                    "image_rotation": 0,
+                                    "value": {
+                                        "x": x_pct,
+                                        "y": y_pct,
+                                        "width": w_pct,
+                                        "height": h_pct,
+                                        "rotation": 0,
+                                        "rectanglelabels": [label_name]
+                                    },
+                                    "id": f"res_{task_id}_{len(results)}",
+                                    "from_name": "label",
+                                    "to_name": "image",
+                                    "type": "rectanglelabels",
+                                    "origin": "manual"
+                                })
+                                annotations_converted += 1
+                except Exception as e:
+                    payload["warnings"].append(f"Error parsing label {rel_lbl}: {e}")
+            
+            task = {
+                "id": task_id,
+                "data": {
+                    "image": rel_img_fwd
+                },
+                "annotations": [
+                    {
+                        "id": task_id,
+                        "result": results
+                    }
+                ]
+            }
+            tasks.append(task)
+            task_id += 1
+
+        try:
+            with open(out_path, "w", encoding="utf-8") as f:
+                json.dump(tasks, f, indent=2)
+        except Exception as e:
+            payload["errors"].append(f"Failed to write output: {e}")
+            die()
+
+        payload["task_count"] = len(tasks)
         payload["annotations_converted"] = annotations_converted
 
     if args.json:
