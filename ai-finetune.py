@@ -46,6 +46,23 @@ def main():
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--workers", type=int, default=0)
     parser.add_argument("--patience", type=int, default=100)
+    parser.add_argument(
+        "--train-scope",
+        choices=["full", "head"],
+        default="full",
+        help="full trains all layers; head freezes all layers before the final YOLO head.",
+    )
+    parser.add_argument(
+        "--freeze-layers",
+        type=int,
+        default=None,
+        help="Freeze the first N Ultralytics model layers. Overrides --train-scope head when set.",
+    )
+    parser.add_argument("--lr0", type=float, default=None, help="Initial learning rate passed to Ultralytics.")
+    parser.add_argument("--lrf", type=float, default=None, help="Final learning rate factor passed to Ultralytics.")
+    parser.add_argument("--optimizer", default=None, help="Optimizer passed to Ultralytics, for example auto, SGD, Adam, AdamW.")
+    parser.add_argument("--cos-lr", action="store_true", help="Enable Ultralytics cosine learning rate schedule.")
+    parser.add_argument("--warmup-epochs", type=float, default=None, help="Warmup epochs passed to Ultralytics.")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
@@ -64,6 +81,14 @@ def main():
         "device": args.device,
         "workers": args.workers,
         "patience": args.patience,
+        "train_scope": args.train_scope,
+        "freeze_layers": args.freeze_layers,
+        "effective_freeze": None,
+        "lr0": args.lr0,
+        "lrf": args.lrf,
+        "optimizer": args.optimizer,
+        "cos_lr": args.cos_lr,
+        "warmup_epochs": args.warmup_epochs,
         "run_dir": None,
         "best_model": None,
         "last_model": None,
@@ -80,6 +105,10 @@ def main():
             for e in payload["errors"]:
                 print(e, file=sys.stderr)
         sys.exit(1 if payload["errors"] else 0)
+
+    if args.freeze_layers is not None and args.freeze_layers < 0:
+        payload["errors"].append("--freeze-layers must be 0 or greater.")
+        die()
 
     if not os.path.exists(args.model):
         payload["errors"].append(f"Model path does not exist: {args.model}")
@@ -103,18 +132,43 @@ def main():
     try:
         with suppress_process_stdio(args.json):
             model = YOLO(args.model)
+            effective_freeze = args.freeze_layers
+            if effective_freeze is None and args.train_scope == "head":
+                layers = getattr(getattr(model, "model", None), "model", None)
+                if layers is None:
+                    payload["errors"].append("Unable to infer model layers for --train-scope head. Use --freeze-layers N.")
+                    die()
+                effective_freeze = max(len(layers) - 1, 0)
+            payload["effective_freeze"] = effective_freeze
+
+            train_kwargs = {
+                "data": args.data,
+                "project": resolved_project,
+                "name": args.name,
+                "epochs": args.epochs,
+                "imgsz": args.imgsz,
+                "batch": args.batch,
+                "device": args.device,
+                "workers": args.workers,
+                "patience": args.patience,
+                "exist_ok": True,
+                "verbose": not args.json,
+            }
+            if effective_freeze is not None:
+                train_kwargs["freeze"] = effective_freeze
+            if args.lr0 is not None:
+                train_kwargs["lr0"] = args.lr0
+            if args.lrf is not None:
+                train_kwargs["lrf"] = args.lrf
+            if args.optimizer is not None:
+                train_kwargs["optimizer"] = args.optimizer
+            if args.cos_lr:
+                train_kwargs["cos_lr"] = True
+            if args.warmup_epochs is not None:
+                train_kwargs["warmup_epochs"] = args.warmup_epochs
+
             model.train(
-                data=args.data,
-                project=resolved_project,
-                name=args.name,
-                epochs=args.epochs,
-                imgsz=args.imgsz,
-                batch=args.batch,
-                device=args.device,
-                workers=args.workers,
-                patience=args.patience,
-                exist_ok=True,
-                verbose=not args.json
+                **train_kwargs
             )
     except Exception as e:
         payload["errors"].append(f"Training failed: {str(e)}")

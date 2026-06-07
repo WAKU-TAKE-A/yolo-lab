@@ -559,6 +559,13 @@ Arguments:
 --device DEVICE
 --workers WORKERS
 --patience PATIENCE
+--train-scope full|head
+--freeze-layers N
+--lr0 LR0
+--lrf LRF
+--optimizer OPTIMIZER
+--cos-lr
+--warmup-epochs WARMUP_EPOCHS
 --force
 --json
 ```
@@ -569,6 +576,9 @@ Purpose:
 - Return generated artifact paths as structured JSON.
 - Keep noisy Ultralytics logs out of JSON stdout when `--json` is used.
 - Allow early stopping patience control for small smoke or subset runs.
+- By default, train all layers. Use `--train-scope head` to freeze all layers before the final YOLO head.
+- Use `--freeze-layers N` for explicit Ultralytics layer freezing. This overrides `--train-scope head`.
+- Use `--lr0`, `--lrf`, `--optimizer`, `--cos-lr`, and `--warmup-epochs` for basic fine-tuning schedule control.
 
 Example:
 
@@ -576,11 +586,19 @@ Example:
 .\.venv\Scripts\python.exe .\ai-finetune.py --model .\models\standard\yolov8s.pt --data .\runs\yolo_ready\data.yaml --project .\runs\train --name smoke --epochs 1 --imgsz 64 --batch 1 --device cpu --workers 0 --patience 10 --json
 ```
 
+Head-only fine-tune example:
+
+```powershell
+.\.venv\Scripts\python.exe .\ai-finetune.py --model .\models\standard\yolov8s.pt --data .\runs\yolo_ready\data.yaml --project .\runs\train --name head_only --epochs 5 --imgsz 640 --batch 8 --device cpu --workers 0 --train-scope head --lr0 0.001 --json
+```
+
 Important:
 
 - A one-epoch smoke run proves the pipeline, not accuracy.
 - Do not claim model improvement unless real validation or evaluation evidence supports it.
 - `--patience` controls Ultralytics early stopping. Smaller values can shorten tiny subset experiments, but may stop real training too early when validation metrics are noisy.
+- `--train-scope head` is useful for quick adaptation when the existing YOLO backbone is likely good enough.
+- Full-layer fine-tuning is still needed when the visual domain is very different from the source model or when head-only training underfits.
 
 ## Before/After Evaluation Comparison
 

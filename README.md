@@ -123,6 +123,12 @@ YOLO から COCO へ変換:
 .\.venv\Scripts\python.exe .\ai-finetune.py --model .\models\standard\yolov8s.pt --data .\runs\yolo_ready\data.yaml --project .\runs\train --name smoke --epochs 1 --imgsz 64 --batch 1 --device cpu --workers 0 --patience 10 --json
 ```
 
+ヘッド層だけを学習:
+
+```powershell
+.\.venv\Scripts\python.exe .\ai-finetune.py --model .\models\standard\yolov8s.pt --data .\runs\yolo_ready\data.yaml --project .\runs\train --name head_only --epochs 5 --imgsz 640 --batch 8 --device cpu --workers 0 --train-scope head --lr0 0.001 --json
+```
+
 学習前後の評価比較:
 
 ```powershell
@@ -162,6 +168,8 @@ id0001 の 000238 は suitcase 未検出
 ## fine-tune について
 
 このリポジトリの fine-tune は、まず軽量な追加学習フローを確実に通すためのものです。
+
+デフォルトでは Ultralytics YOLO の通常学習として全層を学習します。ヘッド層のみを学習したい場合は `--train-scope head` を使います。より細かく制御したい場合は `--freeze-layers N` で先頭から N 層を freeze できます。
 
 1 epoch の smoke 実行で「精度が上がった」とは判断しません。精度について話す場合は、標準モデル評価、fine-tuned モデル評価、比較結果をセットで見ます。
 
