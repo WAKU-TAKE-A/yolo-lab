@@ -174,9 +174,10 @@ def filter_and_edit_annotations(label_path, target_classes, class_mapping):
     lines_scanned = 0
     lines_extracted = 0
     new_lines = []
+    class_counts = {}
     
     if not os.path.exists(label_path):
-        return new_lines, lines_scanned, lines_extracted
+        return new_lines, lines_scanned, lines_extracted, class_counts
         
     try:
         with open(label_path, "r", encoding="utf-8") as f:
@@ -211,10 +212,11 @@ def filter_and_edit_annotations(label_path, target_classes, class_mapping):
                 new_line = " ".join(tokens) + suffix
                 new_lines.append(new_line)
                 lines_extracted += 1
+                class_counts[class_id] = class_counts.get(class_id, 0) + 1
     except Exception:
         pass
         
-    return new_lines, lines_scanned, lines_extracted
+    return new_lines, lines_scanned, lines_extracted, class_counts
 
 def write_yolo_yaml(dst_yaml_path, yaml_data, nc, names):
     yaml_data["nc"] = nc
@@ -245,12 +247,18 @@ def write_yolo_yaml(dst_yaml_path, yaml_data, nc, names):
 
 def main():
     parser = argparse.ArgumentParser(description="AI-first YOLO category extraction utility")
-    parser.add_argument("--dataset", type=str, required=True, help="Path to source YOLO dataset")
+    parser.add_argument("--dataset", type=str, help="Path to source YOLO dataset")
+    parser.add_argument("--path", type=str, help="Alias for --dataset")
     parser.add_argument("--out", type=str, required=True, help="Path to output dataset directory")
     parser.add_argument("--classes", type=str, required=True, help="Comma-separated class IDs or names to extract")
     parser.add_argument("--keep-empty-images", action="store_true", help="Keep all images even if they have no target annotations")
     parser.add_argument("--no-remap", action="store_true", help="Preserve original class IDs instead of remapping to contiguous indices")
     parser.add_argument("--force", action="store_true", help="Force overwrite existing output directory")
+    parser.add_argument("--stats-only", action="store_true", help="Scan and report counts without copying any files")
+    parser.add_argument("--max-images", type=int, help="Maximum total matched images to select")
+    parser.add_argument("--max-images-per-class", type=int, help="Maximum images to select per target class")
+    parser.add_argument("--seed", type=int, default=0, help="Random seed for deterministic sampling")
+    parser.add_argument("--sample-strategy", type=str, choices=["first", "random"], default="first", help="Strategy for selection")
     parser.add_argument("--json", action="store_true", help="Output exact JSON data for program parsing")
 
     args = parser.parse_args()
@@ -258,7 +266,10 @@ def main():
     warnings = []
     errors = []
 
-    dataset_path = args.dataset
+    dataset_path = args.dataset or args.path
+    if not dataset_path:
+        parser.error("Either --dataset or --path is required to specify the source dataset.")
+
     out_path = args.out
 
     resolved_dataset = os.path.abspath(dataset_path)
@@ -270,6 +281,20 @@ def main():
         "classes_requested": [c.strip() for c in args.classes.split(",") if c.strip()],
         "classes_resolved": [],
         "class_mapping": {},
+        "images_scanned": 0,
+        "matched_images_total": 0,
+        "matched_annotations_total": 0,
+        "per_class_image_count": {},
+        "per_class_annotation_count": {},
+        "selection_mode": "stats_only" if args.stats_only else ("bounded" if (args.max_images or args.max_images_per_class) else "unbounded"),
+        "limits": {
+            "max_images": args.max_images,
+            "max_images_per_class": args.max_images_per_class,
+            "sample_strategy": args.sample_strategy,
+            "seed": args.seed
+        },
+        "selected_images_total": 0,
+        "selected_per_class_image_count": {},
         "images_copied": 0,
         "label_files_written": 0,
         "annotation_lines_scanned": 0,
@@ -290,7 +315,7 @@ def main():
         errors.append("Dataset input and output paths must be different. Mutation in-place is not allowed.")
 
     if os.path.exists(resolved_out):
-        if not args.force:
+        if not args.force and not args.stats_only:
             errors.append(f"Output directory already exists: {out_path}. Use --force to overwrite.")
     if errors:
         if args.json:
@@ -346,7 +371,7 @@ def main():
 
     payload["classes_resolved"] = target_classes
 
-    if os.path.exists(resolved_out) and args.force:
+    if not args.stats_only and os.path.exists(resolved_out) and args.force:
         try:
             if os.path.isdir(resolved_out):
                 shutil.rmtree(resolved_out)
@@ -372,14 +397,16 @@ def main():
     # Scan and process images and label files
     image_paths = find_all_images(resolved_dataset)
     
+    payload["images_scanned"] = len(image_paths)
+    
     images_copied_count = 0
     labels_written_count = 0
     lines_scanned_count = 0
     lines_extracted_count = 0
-
-    # Ensure output directory exists before copying files
-    os.makedirs(resolved_out, exist_ok=True)
-
+    
+    # PASS 1: Scan and gather stats into candidates
+    candidates = []
+    
     for img_path in image_paths:
         rel_img_path = os.path.relpath(img_path, resolved_dataset)
         rel_lbl_path, abs_lbl_path = find_label_for_image(resolved_dataset, rel_img_path)
@@ -388,36 +415,103 @@ def main():
         new_lines = []
         lbl_scanned = 0
         lbl_extracted = 0
+        class_counts = {}
         
         if has_lbl:
-            new_lines, lbl_scanned, lbl_extracted = filter_and_edit_annotations(
+            new_lines, lbl_scanned, lbl_extracted, class_counts = filter_and_edit_annotations(
                 abs_lbl_path, target_classes, class_mapping
             )
             lines_scanned_count += lbl_scanned
             lines_extracted_count += lbl_extracted
-            
-        should_copy = (lbl_extracted > 0) or args.keep_empty_images
         
-        if should_copy:
-            # Copy image
-            dst_img_path = os.path.join(resolved_out, rel_img_path)
-            os.makedirs(os.path.dirname(dst_img_path), exist_ok=True)
-            try:
-                shutil.copy2(img_path, dst_img_path)
-                images_copied_count += 1
-            except Exception as e:
-                warnings.append(f"Failed to copy image {img_path} to {dst_img_path}: {e}")
+        if lbl_extracted > 0:
+            payload["matched_images_total"] += 1
+            payload["matched_annotations_total"] += lbl_extracted
+            
+            for cid, count in class_counts.items():
+                cid_str = str(cid)
+                payload["per_class_image_count"][cid_str] = payload["per_class_image_count"].get(cid_str, 0) + 1
+                payload["per_class_annotation_count"][cid_str] = payload["per_class_annotation_count"].get(cid_str, 0) + count
+                
+        should_candidate = (lbl_extracted > 0) or (args.keep_empty_images and not (args.max_images or args.max_images_per_class))
+        
+        if should_candidate:
+            candidates.append({
+                "abs_img": img_path,
+                "rel_img": rel_img_path,
+                "abs_lbl": abs_lbl_path,
+                "rel_lbl": rel_lbl_path,
+                "new_lines": new_lines,
+                "class_counts": class_counts,
+                "has_lbl": has_lbl
+            })
+
+    # Sort deterministically
+    candidates.sort(key=lambda x: x["rel_img"])
+    
+    # PASS 2: Select Candidates
+    if args.sample_strategy == "random":
+        import random
+        random.seed(args.seed)
+        random.shuffle(candidates)
+        
+    selected_candidates = []
+    
+    for cand in candidates:
+        accept = False
+        
+        if not args.max_images and not args.max_images_per_class:
+            accept = True
+        else:
+            # Check global limit
+            if args.max_images and payload["selected_images_total"] >= args.max_images:
                 continue
                 
-            # Write label file (even if empty, to match image)
-            dst_lbl_path = os.path.join(resolved_out, rel_lbl_path)
-            os.makedirs(os.path.dirname(dst_lbl_path), exist_ok=True)
+            # Check class limits
+            if args.max_images_per_class:
+                class_counts = cand["class_counts"]
+                if not class_counts and args.keep_empty_images:
+                    accept = True
+                elif class_counts:
+                    accept = True
+                    for cid in class_counts.keys():
+                        if payload["selected_per_class_image_count"].get(str(cid), 0) >= args.max_images_per_class:
+                            accept = False
+                            break
+                else:
+                    accept = False
+            else:
+                accept = True
+                
+        if accept:
+            selected_candidates.append(cand)
+            payload["selected_images_total"] += 1
+            for cid in cand["class_counts"].keys():
+                cid_str = str(cid)
+                payload["selected_per_class_image_count"][cid_str] = payload["selected_per_class_image_count"].get(cid_str, 0) + 1
+
+    # PASS 3: Copy
+    if not args.stats_only:
+        os.makedirs(resolved_out, exist_ok=True)
+        for cand in selected_candidates:
+            dst_img_path = os.path.join(resolved_out, cand["rel_img"])
+            os.makedirs(os.path.dirname(dst_img_path), exist_ok=True)
             try:
-                with open(dst_lbl_path, "w", encoding="utf-8") as f:
-                    f.writelines(new_lines)
-                labels_written_count += 1
+                shutil.copy2(cand["abs_img"], dst_img_path)
+                images_copied_count += 1
             except Exception as e:
-                warnings.append(f"Failed to write label file {dst_lbl_path}: {e}")
+                warnings.append(f"Failed to copy image {cand['abs_img']} to {dst_img_path}: {e}")
+                continue
+                
+            if cand["has_lbl"] or args.keep_empty_images:
+                dst_lbl_path = os.path.join(resolved_out, cand["rel_lbl"])
+                os.makedirs(os.path.dirname(dst_lbl_path), exist_ok=True)
+                try:
+                    with open(dst_lbl_path, "w", encoding="utf-8") as f:
+                        f.writelines(cand["new_lines"])
+                    labels_written_count += 1
+                except Exception as e:
+                    warnings.append(f"Failed to write label file {dst_lbl_path}: {e}")
 
     # Generate output YAML file
     new_names = None
@@ -435,28 +529,48 @@ def main():
 
     new_nc = len(new_names) if isinstance(new_names, list) else len(target_classes)
     
-    if yaml_file:
-        dst_yaml_path = os.path.join(resolved_out, yaml_file)
-        try:
-            write_yolo_yaml(dst_yaml_path, yaml_data, new_nc, new_names)
-        except Exception as e:
-            warnings.append(f"Failed to write configuration file {dst_yaml_path}: {e}")
-    else:
-        # Create a default data.yaml
-        dst_yaml_path = os.path.join(resolved_out, "data.yaml")
-        default_yaml_data = {}
-        # Try to infer train/val split paths if images were copied
-        # e.g., if there's images/train, we write train: images/train
-        for split in ["train", "val", "test"]:
-            if os.path.exists(os.path.join(resolved_out, "images", split)):
-                default_yaml_data[split] = f"images/{split}"
-            elif os.path.exists(os.path.join(resolved_out, split, "images")):
-                default_yaml_data[split] = f"{split}/images"
-        
-        try:
-            write_yolo_yaml(dst_yaml_path, default_yaml_data, new_nc, new_names)
-        except Exception as e:
-            warnings.append(f"Failed to write default configuration file {dst_yaml_path}: {e}")
+    if not args.stats_only:
+        if yaml_file:
+            dst_yaml_path = os.path.join(resolved_out, yaml_file)
+            try:
+                write_yolo_yaml(dst_yaml_path, yaml_data, new_nc, new_names)
+            except Exception as e:
+                warnings.append(f"Failed to write configuration file {dst_yaml_path}: {e}")
+        else:
+            # Create a default data.yaml
+            dst_yaml_path = os.path.join(resolved_out, "data.yaml")
+            default_yaml_data = {}
+            
+            copied_dirs = set(os.path.dirname(cand["rel_img"]) for cand in selected_candidates)
+            train_dir, val_dir, test_dir = None, None, None
+            
+            for d in copied_dirs:
+                d_lower = d.lower()
+                yaml_path = d.replace(os.sep, '/')
+                if 'train' in d_lower:
+                    if not train_dir: train_dir = yaml_path
+                elif 'val' in d_lower or 'valid' in d_lower:
+                    if not val_dir: val_dir = yaml_path
+                elif 'test' in d_lower:
+                    if not test_dir: test_dir = yaml_path
+            
+            if train_dir: default_yaml_data["train"] = train_dir
+            if val_dir: default_yaml_data["val"] = val_dir
+            if test_dir: default_yaml_data["test"] = test_dir
+            
+            if not default_yaml_data:
+                if len(copied_dirs) == 1:
+                    default_yaml_data["train"] = list(copied_dirs)[0].replace(os.sep, '/')
+                elif copied_dirs:
+                    default_yaml_data["train"] = list(copied_dirs)[0].replace(os.sep, '/')
+                    
+            if not default_yaml_data and os.path.exists(os.path.join(resolved_out, "images")):
+                default_yaml_data["train"] = "images"
+            
+            try:
+                write_yolo_yaml(dst_yaml_path, default_yaml_data, new_nc, new_names)
+            except Exception as e:
+                warnings.append(f"Failed to write default configuration file {dst_yaml_path}: {e}")
 
     if lines_extracted_count == 0:
         warnings.append("Zero annotation lines were extracted.")
@@ -476,11 +590,31 @@ def main():
         print(f"Output path:        {payload['out_path']}")
         print(f"Classes requested:  {', '.join(payload['classes_requested'])}")
         print(f"Classes resolved:   {', '.join(map(str, payload['classes_resolved']))}")
-        print(f"Images copied:      {payload['images_copied']}")
-        print(f"Labels written:     {payload['label_files_written']}")
-        print(f"Lines scanned:      {payload['annotation_lines_scanned']}")
-        print(f"Lines extracted:    {payload['annotation_lines_extracted']}")
+        print("-" * 70)
+        print(f"Selection Mode:     {payload['selection_mode']}")
+        print(f"Images Scanned:     {payload['images_scanned']}")
+        print(f"Matched Images:     {payload['matched_images_total']}")
+        print(f"Matched Anno Lines: {payload['matched_annotations_total']}")
+        print(f"Selected Images:    {payload['selected_images_total']}")
+        print("-" * 70)
+        if not args.stats_only:
+            print(f"Images copied:      {payload['images_copied']}")
+            print(f"Labels written:     {payload['label_files_written']}")
+        
+        print("-" * 70)
+        print("Per-class matched stats (Image count / Anno count):")
+        for cid, cnt in payload["per_class_image_count"].items():
+            anno_cnt = payload["per_class_annotation_count"].get(cid, 0)
+            orig_name = class_map.get(int(cid), f"class_{cid}")
+            print(f"  - {orig_name} (ID: {cid}): {cnt} images / {anno_cnt} annotations")
+            
+        print("Per-class selected stats (Image count):")
+        for cid, cnt in payload["selected_per_class_image_count"].items():
+            orig_name = class_map.get(int(cid), f"class_{cid}")
+            print(f"  - {orig_name} (ID: {cid}): {cnt} images")
+
         if payload["class_mapping"]:
+            print("-" * 70)
             print("Class remapping (original -> new):")
             for k, v in sorted(payload["class_mapping"].items(), key=lambda x: int(x[0])):
                 orig_name = class_map.get(int(k), f"class_{k}")

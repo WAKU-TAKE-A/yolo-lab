@@ -101,16 +101,18 @@ YOLO から COCO へ変換:
 .\.venv\Scripts\python.exe .\ai-dataset-class-edit.py --dataset .\runs\yolo_source --out .\runs\yolo_fixed --from-class 1 --to-class 0 --images 000002.jpg --json
 ```
 
-特定クラスだけ抽出:
+- **Dataset Utilities**: Check dataset integrity, perform bounded subset extraction (`--max-images`, `--max-images-per-class`), remap classes, and convert formats.
+
+特定クラスだけ抽出 (データセットのパスは --dataset または --path で指定可能):
 
 ```powershell
-.\.venv\Scripts\python.exe .\ai-dataset-extract-classes.py --dataset .\runs\yolo_source --out .\runs\yolo_dog_cow --classes dog,cow --json
+.\.venv\Scripts\python.exe .\ai-dataset-extract-classes.py --path .\runs\yolo_source --out .\runs\yolo_dog_cow --classes dog,cow --json
 ```
 
 軽量 fine-tune:
 
 ```powershell
-.\.venv\Scripts\python.exe .\ai-finetune.py --model .\models\standard\yolov8s.pt --data .\runs\yolo_ready\data.yaml --project .\runs\train --name smoke --epochs 1 --imgsz 64 --batch 1 --device cpu --workers 0 --json
+.\.venv\Scripts\python.exe .\ai-finetune.py --model .\models\standard\yolov8s.pt --data .\runs\yolo_ready\data.yaml --project .\runs\train --name smoke --epochs 1 --imgsz 64 --batch 1 --device cpu --workers 0 --patience 10 --json
 ```
 
 学習前後の評価比較:
@@ -134,6 +136,10 @@ runs/id0001/
 ```
 
 画像ビュアーで `overlays/` を見ながら、検出IDに対してレビューできます。
+
+`results.csv` は bbox ベースの軽量な検出インデックスとして維持します。segmentation の polygon や OBB の回転矩形などの詳細 geometry は `predictions/*.json` に保存します。`--geometry bbox` を指定すると詳細 geometry は保存せず、bbox のみを扱います。
+
+現在の `ai-eval.py` の対象は instance-level の detect / segment / OBB です。classify と semantic segmentation は画像単位または別形式の出力なので、将来対応予定として扱い、現時点では未実装です。
 
 例:
 

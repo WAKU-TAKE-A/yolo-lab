@@ -157,11 +157,13 @@ id0001,505,000238,input/B.jpg,28,suitcase,0.63,120,80,450,500
 id0001,506,000238,input/B.jpg,72,refrigerator,0.41,500,100,800,620
 ```
 
-For segmentation and OBB, add fields later rather than overloading the first version.
+For instance-level geometry (segmentation polygon, OBB), add rich geometry directly to `predictions/*.json` instead of overloading the first version of the CSV. The CSV maintains backward compatibility with bounding boxes as the primary stable instance index.
 
 ### predictions/*.json
 
-Image-level prediction file.
+Image-level prediction file. Stores rich instance geometry like `polygon_xy`, `polygon_xyn`, `obb_xywhr`, and `obb_xyxyxyxy`.
+
+Current geometry support is instance-level: detect, segment, and OBB. Classification and semantic segmentation are future planned output families because they are image-level or otherwise different from instance geometry; they are intentionally outside the current implementation scope.
 
 Example:
 
@@ -390,4 +392,3 @@ candidate extraction
 The generative AI translates natural language into CLI commands.
 
 The human mostly views images and says what should be marked.
-

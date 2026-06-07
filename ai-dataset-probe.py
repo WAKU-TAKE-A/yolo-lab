@@ -137,15 +137,19 @@ def count_yolo_files(base_dir, data_yaml_content=None):
 
 def main():
     parser = argparse.ArgumentParser(description="Dataset probe utility for YOLO-Lab")
-    parser.add_argument("--path", type=str, required=True, help="Path to dataset file or directory")
+    parser.add_argument("--path", type=str, help="Path to dataset file or directory")
+    parser.add_argument("--dataset", type=str, help="Alias for --path")
     parser.add_argument("--json", action="store_true", help="Output exact JSON data for program parsing")
 
     args = parser.parse_args()
+    
+    input_path = args.path or args.dataset
+    if not input_path:
+        parser.error("Either --path or --dataset is required to specify the input path.")
 
     warnings = []
     errors = []
 
-    input_path = args.path
     resolved_path = os.path.abspath(input_path)
 
     payload = {

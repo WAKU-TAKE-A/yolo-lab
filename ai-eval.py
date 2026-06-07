@@ -182,9 +182,50 @@ def run_evaluate(args):
             warnings.append(f"Prediction failed on image {fname}: {e}")
             continue
 
-        # Extract bboxes
+        # Extract instances
         img_detections = []
-        if hasattr(result, "boxes") and result.boxes is not None:
+        
+        # Check available geometry
+        has_boxes = hasattr(result, "boxes") and result.boxes is not None
+        has_masks = hasattr(result, "masks") and result.masks is not None
+        has_obb = hasattr(result, "obb") and result.obb is not None
+        requested_geometry = args.geometry
+        save_polygon = requested_geometry in ("auto", "polygon")
+        save_obb = requested_geometry in ("auto", "obb")
+        
+        # Use OBB if present, else fallback to boxes
+        if has_obb:
+            obbs = result.obb
+            for i in range(len(obbs)):
+                cls_id = int(obbs.cls[i].item())
+                cls_name = result.names[cls_id] if result.names and cls_id in result.names else f"class_{cls_id}"
+                conf_val = float(obbs.conf[i].item())
+                xyxy = obbs.xyxy[i].cpu().tolist() # axis-aligned bounding box
+
+                det = {
+                    "det_id": global_det_id,
+                    "class_id": cls_id,
+                    "class_name": cls_name,
+                    "confidence": conf_val,
+                    "bbox_xyxy": xyxy
+                }
+                if save_obb:
+                    det["geometry_type"] = "obb"
+                    det["geometry_coordinates"] = "image_pixels"
+                    det["obb_xywhr"] = obbs.xywhr[i].cpu().tolist()
+                    det["obb_xyxyxyxy"] = obbs.xyxyxyxy[i].cpu().tolist() # 4 corners
+                img_detections.append(det)
+
+                # Write to CSV
+                x1, y1, x2, y2 = xyxy
+                csv_writer.writerow([
+                    eval_id, global_det_id, image_id, f"{input_dir}/{fname}",
+                    cls_id, cls_name, f"{conf_val:.4f}",
+                    f"{x1:.2f}", f"{y1:.2f}", f"{x2:.2f}", f"{y2:.2f}"
+                ])
+
+                global_det_id += 1
+        elif has_boxes:
             boxes = result.boxes
             for i in range(len(boxes)):
                 cls_id = int(boxes.cls[i].item())
@@ -199,6 +240,15 @@ def run_evaluate(args):
                     "confidence": conf_val,
                     "bbox_xyxy": xyxy
                 }
+                
+                # Add segmentation polygon if requested and available.
+                if save_polygon and has_masks and i < len(result.masks.xy):
+                    det["geometry_type"] = "polygon"
+                    det["geometry_coordinates"] = "image_pixels"
+                    det["polygon_xy"] = result.masks.xy[i].tolist()
+                    if hasattr(result.masks, "xyn") and i < len(result.masks.xyn):
+                        det["polygon_xyn"] = result.masks.xyn[i].tolist()
+
                 img_detections.append(det)
 
                 # Write to CSV
@@ -226,9 +276,42 @@ def run_evaluate(args):
                     conf = det["confidence"]
                     x1, y1, x2, y2 = [int(round(coord)) for coord in det["bbox_xyxy"]]
 
-                    # Draw bbox rectangle
+                    # Draw geometry
                     color = (0, 255, 0)
-                    cv2.rectangle(img_data, (x1, y1), (x2, y2), color, 2)
+                    draw_bbox = False
+                    draw_poly = False
+                    draw_obb = False
+                    
+                    req_overlay = args.overlay
+                    if req_overlay == "auto":
+                        if "obb_xyxyxyxy" in det: draw_obb = True
+                        elif "polygon_xy" in det: draw_poly = True
+                        else: draw_bbox = True
+                    elif req_overlay == "bbox": draw_bbox = True
+                    elif req_overlay == "polygon" or req_overlay == "mask": draw_poly = True
+                    elif req_overlay == "obb": draw_obb = True
+                    elif req_overlay == "both":
+                        draw_bbox = True
+                        if "obb_xyxyxyxy" in det: draw_obb = True
+                        if "polygon_xy" in det: draw_poly = True
+
+                    if draw_poly and "polygon_xy" in det:
+                        pts = np.array(det["polygon_xy"], np.int32)
+                        pts = pts.reshape((-1, 1, 2))
+                        if req_overlay == "mask":
+                            overlay_img = img_data.copy()
+                            cv2.fillPoly(overlay_img, [pts], color)
+                            cv2.addWeighted(overlay_img, 0.4, img_data, 0.6, 0, img_data)
+                        else:
+                            cv2.polylines(img_data, [pts], True, color, 2)
+                    
+                    if draw_obb and "obb_xyxyxyxy" in det:
+                        pts = np.array(det["obb_xyxyxyxy"], np.int32)
+                        pts = pts.reshape((-1, 1, 2))
+                        cv2.polylines(img_data, [pts], True, color, 2)
+                        
+                    if draw_bbox or (not draw_poly and not draw_obb):
+                        cv2.rectangle(img_data, (x1, y1), (x2, y2), color, 2)
 
                     # Draw label: [det_id] class_name conf
                     label = f"[{d_id}] {cls_name} {conf:.2f}"
@@ -505,12 +588,22 @@ def run_show(args):
         print(f"Class:           {r_row['class_name']} (ID: {r_row['class_id']})")
         print(f"Confidence:      {r_row['confidence']:.4f}")
         print(f"Bbox:            [{', '.join(f'{x:.2f}' for x in r_row['bbox'])}]")
+        
+        pred_det = payload.get("prediction_detection")
+        if pred_det:
+            if "polygon_xy" in pred_det:
+                poly = pred_det["polygon_xy"]
+                print(f"Polygon:         Yes ({len(poly)} points)")
+            if "obb_xywhr" in pred_det:
+                obb_xywhr = pred_det["obb_xywhr"]
+                print(f"OBB (xywhr):     [{', '.join(f'{x:.4f}' for x in obb_xywhr)}]")
+        
         print(f"Image ID:        {r_row['image_id']}")
         print(f"Source Image:    {payload['source_image_path']}")
         print(f"Copied Image:    {payload['copied_image_path']}")
         print(f"Overlay Image:   {payload['overlay_image_path']}")
         print(f"Prediction JSON: {payload['prediction_json_path']}")
-        if payload["prediction_detection"]:
+        if pred_det:
             print(f"Detection Match: Found in prediction JSON")
         else:
             print(f"Detection Match: Not found or JSON missing")
@@ -1293,6 +1386,8 @@ def main():
     parser_eval.add_argument("--out", type=str, required=True, help="Path to output run directory")
     parser_eval.add_argument("--conf", type=float, help="Optional confidence threshold")
     parser_eval.add_argument("--imgsz", type=int, help="Optional inference image size")
+    parser_eval.add_argument("--geometry", type=str, choices=["auto", "bbox", "polygon", "obb"], default="auto", help="Output geometry type")
+    parser_eval.add_argument("--overlay", type=str, choices=["auto", "bbox", "polygon", "mask", "obb", "both"], default="auto", help="Overlay drawing style")
     parser_eval.add_argument("--json", action="store_true", help="Output exact JSON data for program parsing")
 
     # show subcommand

@@ -256,7 +256,7 @@ export-candidates
 Arguments:
 
 ```text
-evaluate --model MODEL --input INPUT --out OUT --conf CONF --imgsz IMGSZ --json
+evaluate --model MODEL --input INPUT --out OUT --conf CONF --imgsz IMGSZ --geometry auto|bbox|polygon|obb --overlay auto|bbox|polygon|mask|obb|both --json
 ```
 
 Example:
@@ -276,6 +276,10 @@ runs/id0001/
   overlays/
   predictions/
 ```
+
+`results.csv` stays a lightweight bbox-oriented instance index. Rich instance geometry is stored in `predictions/*.json`: segmentation runs can include `polygon_xy` / `polygon_xyn`, and OBB runs can include `obb_xywhr` / `obb_xyxyxyxy`. `--geometry bbox` suppresses these rich geometry fields while preserving bbox output.
+
+Current geometry support is instance-level: detect, segment, and OBB. Classification and semantic segmentation are future output families because they are image-level or otherwise different from instance geometry, and they are not implemented in `ai-eval.py` yet.
 
 Detection IDs are global within an evaluation run. A human can review an overlay and say:
 
@@ -480,20 +484,13 @@ Example:
 Script:
 
 ```text
-ai-dataset-extract-classes.py
+ai-dataset-extract-classes.py --dataset DATASET --out OUT --classes CLASSES [--keep-empty-images] [--no-remap] [--stats-only] [--max-images N] [--max-images-per-class N] [--seed N] [--sample-strategy first|random] [--force] [--json]
 ```
 
-Arguments:
-
-```text
---dataset DATASET
---out OUT
---classes CLASSES
---keep-empty-images
---no-remap
---force
---json
-```
+Use `--stats-only` to preview dataset class distribution and bounds before copying large files.
+Use `--max-images N` to bound the total number of images.
+Use `--max-images-per-class N` to balance a dataset based on per-class image representation limits. Note that extraction distinguishes between 'per-class image count' (images containing the class) and 'annotation occurrence count' (total bounding boxes).
+The `--path` argument can be used as an interchangeable alias for `--dataset`.
 
 Purpose:
 
@@ -526,6 +523,7 @@ Arguments:
 --batch BATCH
 --device DEVICE
 --workers WORKERS
+--patience PATIENCE
 --force
 --json
 ```
@@ -535,17 +533,19 @@ Purpose:
 - Wrap a local Ultralytics YOLO training run.
 - Return generated artifact paths as structured JSON.
 - Keep noisy Ultralytics logs out of JSON stdout when `--json` is used.
+- Allow early stopping patience control for small smoke or subset runs.
 
 Example:
 
 ```powershell
-.\.venv\Scripts\python.exe .\ai-finetune.py --model .\models\standard\yolov8s.pt --data .\runs\yolo_ready\data.yaml --project .\runs\train --name smoke --epochs 1 --imgsz 64 --batch 1 --device cpu --workers 0 --json
+.\.venv\Scripts\python.exe .\ai-finetune.py --model .\models\standard\yolov8s.pt --data .\runs\yolo_ready\data.yaml --project .\runs\train --name smoke --epochs 1 --imgsz 64 --batch 1 --device cpu --workers 0 --patience 10 --json
 ```
 
 Important:
 
 - A one-epoch smoke run proves the pipeline, not accuracy.
 - Do not claim model improvement unless real validation or evaluation evidence supports it.
+- `--patience` controls Ultralytics early stopping. Smaller values can shorten tiny subset experiments, but may stop real training too early when validation metrics are noisy.
 
 ## Before/After Evaluation Comparison
 

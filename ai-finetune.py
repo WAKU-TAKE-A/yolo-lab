@@ -45,6 +45,7 @@ def main():
     parser.add_argument("--batch", type=int, default=1)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--workers", type=int, default=0)
+    parser.add_argument("--patience", type=int, default=100)
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
@@ -62,6 +63,7 @@ def main():
         "batch": args.batch,
         "device": args.device,
         "workers": args.workers,
+        "patience": args.patience,
         "run_dir": None,
         "best_model": None,
         "last_model": None,
@@ -110,6 +112,7 @@ def main():
                 batch=args.batch,
                 device=args.device,
                 workers=args.workers,
+                patience=args.patience,
                 exist_ok=True,
                 verbose=not args.json
             )
