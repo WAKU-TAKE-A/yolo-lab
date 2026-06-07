@@ -1,0 +1,193 @@
+# YOLO-Lab
+
+YOLO-Lab は、YOLO / ONNXRuntime / 評価 / データセット変換 / 軽量 fine-tune を、生成AIが扱いやすい形で進めるためのコマンド集です。
+
+目的は GUI や高機能な統合アプリを作ることではありません。生成AIが環境やモデルを誤解せず、JSON などの構造化出力を材料にして、より安定した回答やスクリプト提案を返せるようにすることです。
+
+AI が読む詳細仕様は [README_AI.md](README_AI.md) にあります。
+
+## 基本方針
+
+まず標準モデルで確認します。いきなり追加学習に進みません。
+
+大きな流れは次の通りです。
+
+```text
+1. PC環境・モデル確認
+2. 画像単位の推論確認
+3. フォルダ評価と人間レビュー
+4. データセット調査・編集・抽出・変換
+5. 軽量 fine-tune
+6. 学習前後の評価比較
+```
+
+`--json` 出力は主に AI が読むためのものです。人間に見やすいことより、AI がパースしやすいことを優先しています。
+
+## セットアップ
+
+このリポジトリでは venv を使います。
+
+```powershell
+.\setup_venv.bat
+```
+
+通常の実行は次の Python を使います。
+
+```powershell
+.\.venv\Scripts\python.exe
+```
+
+GPU 前提の検証に進む場合は、PyTorch CUDA wheel の扱いを別途決める必要があります。現状の基本は CPU でも動く確認フローです。
+
+## よく使うコマンド
+
+環境確認:
+
+```powershell
+.\.venv\Scripts\python.exe .\ai-env-probe.py --json
+```
+
+モデル確認:
+
+```powershell
+.\.venv\Scripts\python.exe .\ai-model-probe.py --model .\models\standard\yolov8s.pt --json
+```
+
+1枚の画像で推論確認:
+
+```powershell
+.\.venv\Scripts\python.exe .\ai-image-predict-probe.py --model .\models\standard\yolov8s.pt --image .\samples\test.jpg --out .\runs\probe_one --json
+```
+
+画像フォルダを評価:
+
+```powershell
+.\.venv\Scripts\python.exe .\ai-eval.py evaluate --model .\models\standard\yolov8s.pt --input .\datasets\images --out .\runs\id0001 --json
+```
+
+検出IDの詳細確認:
+
+```powershell
+.\.venv\Scripts\python.exe .\ai-eval.py show id0001 505 --json
+```
+
+誤検出などを記録:
+
+```powershell
+.\.venv\Scripts\python.exe .\ai-eval.py mark id0001 506 --status false_positive --note "誤検出" --json
+```
+
+未検出などを画像単位で記録:
+
+```powershell
+.\.venv\Scripts\python.exe .\ai-eval.py mark-image id0001 000238 --status missed --target-class suitcase --note "右下が未検出" --json
+```
+
+データセット確認:
+
+```powershell
+.\.venv\Scripts\python.exe .\ai-dataset-probe.py --path .\runs\yolo_ready --json
+```
+
+YOLO から COCO へ変換:
+
+```powershell
+.\.venv\Scripts\python.exe .\ai-dataset-convert.py --from yolo --to coco --dataset .\runs\yolo_ready --out .\runs\coco_out\annotations.json --json
+```
+
+クラスを修正:
+
+```powershell
+.\.venv\Scripts\python.exe .\ai-dataset-class-edit.py --dataset .\runs\yolo_source --out .\runs\yolo_fixed --from-class 1 --to-class 0 --images 000002.jpg --json
+```
+
+特定クラスだけ抽出:
+
+```powershell
+.\.venv\Scripts\python.exe .\ai-dataset-extract-classes.py --dataset .\runs\yolo_source --out .\runs\yolo_dog_cow --classes dog,cow --json
+```
+
+軽量 fine-tune:
+
+```powershell
+.\.venv\Scripts\python.exe .\ai-finetune.py --model .\models\standard\yolov8s.pt --data .\runs\yolo_ready\data.yaml --project .\runs\train --name smoke --epochs 1 --imgsz 64 --batch 1 --device cpu --workers 0 --json
+```
+
+学習前後の評価比較:
+
+```powershell
+.\.venv\Scripts\python.exe .\ai-eval-compare-runs.py --before .\runs\eval_base --after .\runs\eval_tuned --json
+```
+
+## 評価結果の考え方
+
+`ai-eval.py evaluate` は評価ごとに `runs/<eval_id>/` を作ります。
+
+```text
+runs/id0001/
+  manifest.json
+  results.csv
+  review.jsonl
+  images/
+  overlays/
+  predictions/
+```
+
+画像ビュアーで `overlays/` を見ながら、検出IDに対してレビューできます。
+
+例:
+
+```text
+id0001 の 505 は OK
+id0001 の 506 は誤検出
+id0001 の 000238 は suitcase 未検出
+```
+
+このレビュー結果をもとに、データセット修正や fine-tune に進むか判断します。
+
+## fine-tune について
+
+このリポジトリの fine-tune は、まず軽量な追加学習フローを確実に通すためのものです。
+
+1 epoch の smoke 実行で「精度が上がった」とは判断しません。精度について話す場合は、標準モデル評価、fine-tuned モデル評価、比較結果をセットで見ます。
+
+## 主なファイル
+
+- `README_AI.md`: AI 向けの完全・詳細な英語仕様
+- `AI_WORKFLOW.md`: ワークフロー概要
+- `AI_WORKFLOW_CHECKLIST.md`: 実用チェックリスト
+- `ai-env-probe.py`: 環境確認
+- `ai-model-probe.py`: モデル確認
+- `ai-image-predict-probe.py`: 画像単位の推論確認
+- `ai-eval.py`: 評価・レビュー管理
+- `ai-dataset-probe.py`: データセット確認
+- `ai-dataset-convert.py`: YOLO / COCO / Label Studio 変換
+- `ai-dataset-class-edit.py`: YOLO ラベルのクラス修正
+- `ai-dataset-extract-classes.py`: 特定クラス抽出
+- `ai-finetune.py`: 軽量 fine-tune
+- `ai-eval-compare-runs.py`: 評価結果の before/after 比較
+- `ai-onnx-probe.py`: ONNX モデル確認
+- `ai-onnx-raw-inference-probe.py`: ONNXRuntime 生推論確認
+- `ai-compare-probe.py`: PyTorch YOLO と ONNX の比較材料取得
+- `ai-val-probe.py`: Ultralytics validation 確認
+
+## Git 管理
+
+生成物や大きいファイルは基本的にコミットしません。
+
+主に無視されるもの:
+
+```text
+.venv/
+runs/
+models/
+samples/
+datasets/
+dual-model-operation-kit/
+```
+
+コミット前は確認します。
+
+```powershell
+git status --short
+```
