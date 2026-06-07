@@ -2,6 +2,8 @@
 
 This repository provides an AI-first command workflow for YOLO, ONNXRuntime, evaluation review, dataset conversion, and light fine-tuning. The purpose is not to build a GUI or a general training platform. The purpose is to give an AI assistant stable commands that return structured facts, usually JSON, so the assistant can answer YOLO-related questions with less drift.
 
+Public repository positioning: keep the repository name and scope centered on YOLO-Lab. This is an AI-friendly YOLO toolkit, not a generic AI lab.
+
 Use this file when you are an AI agent operating this repository.
 
 ## Core Principle
@@ -680,9 +682,14 @@ Expected source/document changes may include:
 ```text
 README.md
 README_AI.md
-AI_WORKFLOW.md
-AI_WORKFLOW_CHECKLIST.md
+docs/AI_WORKFLOW.md
+docs/AI_EVAL_REVIEW_CLI_DESIGN.md
+docs/AI_DATASET_OPERATIONS_DESIGN.md
 ai-*.py
 ```
 
 Do not stage ignored run/model/sample/dataset artifacts unless explicitly requested.
+
+## License
+
+This repository is released under the MIT License. See `LICENSE`.

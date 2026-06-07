@@ -1,5 +1,7 @@
 # YOLO-Lab
 
+YOLO-Lab is an AI-friendly command-line toolkit for YOLO model inspection, ONNXRuntime checks, evaluation review, dataset operations, and lightweight fine-tuning.
+
 YOLO-Lab は、YOLO / ONNXRuntime / 評価 / データセット変換 / 軽量 fine-tune を、生成AIが扱いやすい形で進めるためのコマンド集です。
 
 目的は GUI や高機能な統合アプリを作ることではありません。生成AIが環境やモデルを誤解せず、JSON などの構造化出力を材料にして、より安定した回答やスクリプト提案を返せるようにすることです。
@@ -166,8 +168,7 @@ id0001 の 000238 は suitcase 未検出
 ## 主なファイル
 
 - `README_AI.md`: AI 向けの完全・詳細な英語仕様
-- `AI_WORKFLOW.md`: ワークフロー概要
-- `AI_WORKFLOW_CHECKLIST.md`: 実用チェックリスト
+- `docs/AI_WORKFLOW.md`: ワークフロー概要と実用チェックリスト
 - `ai-env-probe.py`: 環境確認
 - `ai-model-probe.py`: モデル確認
 - `ai-image-predict-probe.py`: 画像単位の推論確認
@@ -204,3 +205,7 @@ dual-model-operation-kit/
 ```powershell
 git status --short
 ```
+
+## License
+
+MIT License. See [LICENSE](LICENSE).
