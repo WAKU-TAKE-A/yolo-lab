@@ -47,6 +47,12 @@ GPU 前提の検証に進む場合は、PyTorch CUDA wheel の扱いを別途決
 .\.venv\Scripts\python.exe .\ai-env-probe.py --json
 ```
 
+データセット取得:
+
+```powershell
+.\.venv\Scripts\python.exe .\ai-dataset-download.py --preset coco128-seg --out .\datasets\coco128-seg --json
+```
+
 モデル確認:
 
 ```powershell
@@ -167,6 +173,7 @@ id0001 の 000238 は suitcase 未検出
 - `ai-image-predict-probe.py`: 画像単位の推論確認
 - `ai-eval.py`: 評価・レビュー管理
 - `ai-dataset-probe.py`: データセット確認
+- `ai-dataset-download.py`: sample / COCO 系データセット取得
 - `ai-dataset-convert.py`: YOLO / COCO / Label Studio 変換
 - `ai-dataset-class-edit.py`: YOLO ラベルのクラス修正
 - `ai-dataset-extract-classes.py`: 特定クラス抽出

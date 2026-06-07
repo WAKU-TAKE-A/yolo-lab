@@ -56,6 +56,39 @@ The repository has used tiny smoke artifacts under `runs/id0025_*` and `runs/id0
 
 ## Command Inventory
 
+### Dataset Download
+
+Script:
+
+```text
+ai-dataset-download.py
+```
+
+Purpose:
+
+- Download small dataset presets for smoke testing.
+- Download selected COCO train2017 images from an existing YOLO labels directory.
+- Keep full COCO guarded behind `--allow-large` because it is very large. COCO test2017 is additionally gated by `--include-test`.
+
+Examples:
+
+```powershell
+.\.venv\Scripts\python.exe .\ai-dataset-download.py --preset coco128-seg --out .\datasets\coco128-seg --json
+.\.venv\Scripts\python.exe .\ai-dataset-download.py --preset coco-train-subset --labels .\datasets\coco\labels\train2017 --out .\datasets\coco_subset --classes bench,backpack,handbag,suitcase,refrigerator --max-images-per-class 150 --json
+```
+
+Supported presets:
+
+```text
+sample-images
+coco8
+coco8-seg
+coco128
+coco128-seg
+coco
+coco-train-subset
+```
+
 ### Environment Probe
 
 Script:
