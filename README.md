@@ -91,6 +91,14 @@ GPU 前提の検証に進む場合は、PyTorch CUDA wheel の扱いを別途決
 .\.venv\Scripts\python.exe .\ai-eval.py mark-image id0001 000238 --status missed --target-class suitcase --note "右下が未検出" --json
 ```
 
+未検出の正しい geometry を追加:
+
+```powershell
+.\.venv\Scripts\python.exe .\ai-eval.py add-annotation id0001 000238 --class suitcase --geometry bbox --bbox 120,80,300,260 --json
+```
+
+`000238` は検出IDではなく画像IDです。検出が0件の画像でも、評価run内に画像IDがあれば `add-annotation` で bbox / polygon / OBB を追加できます。追加された annotation は `review.jsonl` に追記され、`results.csv` と `predictions/*.json` は書き換えません。
+
 データセット確認:
 
 ```powershell

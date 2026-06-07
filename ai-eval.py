@@ -1,4 +1,4 @@
-import sys
+﻿import sys
 import os
 import json
 import argparse
@@ -184,7 +184,7 @@ def run_evaluate(args):
 
         # Extract instances
         img_detections = []
-        
+
         # Check available geometry
         has_boxes = hasattr(result, "boxes") and result.boxes is not None
         has_masks = hasattr(result, "masks") and result.masks is not None
@@ -192,7 +192,7 @@ def run_evaluate(args):
         requested_geometry = args.geometry
         save_polygon = requested_geometry in ("auto", "polygon")
         save_obb = requested_geometry in ("auto", "obb")
-        
+
         # Use OBB if present, else fallback to boxes
         if has_obb:
             obbs = result.obb
@@ -240,7 +240,7 @@ def run_evaluate(args):
                     "confidence": conf_val,
                     "bbox_xyxy": xyxy
                 }
-                
+
                 # Add segmentation polygon if requested and available.
                 if save_polygon and has_masks and i < len(result.masks.xy):
                     det["geometry_type"] = "polygon"
@@ -281,7 +281,7 @@ def run_evaluate(args):
                     draw_bbox = False
                     draw_poly = False
                     draw_obb = False
-                    
+
                     req_overlay = args.overlay
                     if req_overlay == "auto":
                         if "obb_xyxyxyxy" in det: draw_obb = True
@@ -304,12 +304,12 @@ def run_evaluate(args):
                             cv2.addWeighted(overlay_img, 0.4, img_data, 0.6, 0, img_data)
                         else:
                             cv2.polylines(img_data, [pts], True, color, 2)
-                    
+
                     if draw_obb and "obb_xyxyxyxy" in det:
                         pts = np.array(det["obb_xyxyxyxy"], np.int32)
                         pts = pts.reshape((-1, 1, 2))
                         cv2.polylines(img_data, [pts], True, color, 2)
-                        
+
                     if draw_bbox or (not draw_poly and not draw_obb):
                         cv2.rectangle(img_data, (x1, y1), (x2, y2), color, 2)
 
@@ -499,7 +499,7 @@ def run_show(args):
                                 break
                         except (ValueError, TypeError):
                             continue
-            
+
             if not errors:
                 if matching_row is None:
                     errors.append(f"det_id {det_id} not found in results.csv")
@@ -509,7 +509,7 @@ def run_show(args):
                         class_id = int(matching_row["class_id"]) if matching_row.get("class_id") is not None else None
                     except ValueError:
                         class_id = matching_row["class_id"]
-                    
+
                     try:
                         confidence = float(matching_row["confidence"]) if matching_row.get("confidence") is not None else None
                     except ValueError:
@@ -588,7 +588,7 @@ def run_show(args):
         print(f"Class:           {r_row['class_name']} (ID: {r_row['class_id']})")
         print(f"Confidence:      {r_row['confidence']:.4f}")
         print(f"Bbox:            [{', '.join(f'{x:.2f}' for x in r_row['bbox'])}]")
-        
+
         pred_det = payload.get("prediction_detection")
         if pred_det:
             if "polygon_xy" in pred_det:
@@ -597,7 +597,7 @@ def run_show(args):
             if "obb_xywhr" in pred_det:
                 obb_xywhr = pred_det["obb_xywhr"]
                 print(f"OBB (xywhr):     [{', '.join(f'{x:.4f}' for x in obb_xywhr)}]")
-        
+
         print(f"Image ID:        {r_row['image_id']}")
         print(f"Source Image:    {payload['source_image_path']}")
         print(f"Copied Image:    {payload['copied_image_path']}")
@@ -711,7 +711,7 @@ def run_mark(args):
         # Open in append mode
         with open(review_path, "a", encoding="utf-8") as rf:
             rf.write(json.dumps(record, ensure_ascii=False) + "\n")
-        
+
         payload["appended_record"] = record
         payload["review_jsonl_path"] = os.path.relpath(review_path, os.getcwd())
     except Exception as e:
@@ -843,7 +843,7 @@ def run_mark_image(args):
         # Open in append mode
         with open(review_path, "a", encoding="utf-8") as rf:
             rf.write(json.dumps(record, ensure_ascii=False) + "\n")
-        
+
         payload["appended_record"] = record
         payload["review_jsonl_path"] = os.path.relpath(review_path, os.getcwd())
     except Exception as e:
@@ -869,6 +869,195 @@ def run_mark_image(args):
             print(f"Review Path:  {payload['review_jsonl_path']}")
             print("=" * 70)
 
+def run_add_annotation(args):
+    warnings = []
+    errors = []
+
+    eval_id = args.eval_id
+    image_id = args.image_id
+
+    runs_root = args.runs_root or "runs"
+    run_dir = os.path.normpath(os.path.join(runs_root, eval_id))
+    review_path = os.path.join(run_dir, "review.jsonl")
+    csv_path = os.path.join(run_dir, "results.csv")
+
+    payload = {
+        "appended_record": None,
+        "review_jsonl_path": os.path.relpath(review_path, os.getcwd()) if os.path.exists(run_dir) else None,
+        "warnings": warnings,
+        "errors": errors
+    }
+
+    if not os.path.exists(run_dir):
+        errors.append(f"Run directory does not exist: {run_dir}")
+    elif not os.path.isdir(run_dir):
+        errors.append(f"Run path is not a directory: {run_dir}")
+
+    if not errors:
+        image_exists = False
+        pred_json_path = os.path.join(run_dir, "predictions", f"{image_id}.json")
+        if os.path.exists(pred_json_path):
+            image_exists = True
+
+        if not image_exists:
+            images_dir = os.path.join(run_dir, "images")
+            if os.path.exists(images_dir) and os.path.isdir(images_dir):
+                try:
+                    for f in os.listdir(images_dir):
+                        name, ext = os.path.splitext(f)
+                        if name == image_id:
+                            image_exists = True
+                            break
+                except Exception:
+                    pass
+        if not image_exists:
+            errors.append(f"image_id {image_id} not found in predictions JSON or images directory")
+
+    if not os.path.exists(csv_path) and not errors:
+        warnings.append(f"results.csv not found, proceeding anyway")
+
+    # Geometry parsing
+    geom_type = args.geometry
+    geom_data = {}
+
+    if not errors:
+        try:
+            if geom_type == "bbox":
+                if not args.bbox:
+                    errors.append("Missing --bbox argument for geometry bbox")
+                else:
+                    parts = [float(x.strip()) for x in args.bbox.split(",")]
+                    if len(parts) != 4:
+                        errors.append(f"bbox requires exactly 4 numbers, got {len(parts)}")
+                    else:
+                        geom_data["bbox_xyxy"] = parts
+            elif geom_type == "polygon":
+                if not args.polygon:
+                    errors.append("Missing --polygon argument for geometry polygon")
+                else:
+                    pts = []
+                    for pt_str in args.polygon.split(";"):
+                        pt_str = pt_str.strip()
+                        if not pt_str: continue
+                        coords = [float(x.strip()) for x in pt_str.split(",")]
+                        if len(coords) != 2:
+                            errors.append(f"polygon point requires exactly 2 numbers, got {len(coords)} in {pt_str}")
+                        pts.append(coords)
+                    if len(pts) < 3:
+                        errors.append(f"polygon requires at least 3 points, got {len(pts)}")
+                    geom_data["polygon_xy"] = pts
+            elif geom_type == "obb":
+                if not args.obb_xywhr:
+                    errors.append("Missing --obb-xywhr argument for geometry obb")
+                else:
+                    parts = [float(x.strip()) for x in args.obb_xywhr.split(",")]
+                    if len(parts) != 5:
+                        errors.append(f"obb-xywhr requires exactly 5 numbers, got {len(parts)}")
+                    else:
+                        geom_data["obb_xywhr"] = parts
+        except ValueError as e:
+            errors.append(f"Failed to parse geometry numbers: {e}")
+
+    if errors:
+        if args.json:
+            print(json.dumps(payload, indent=2))
+            sys.exit(0)
+        else:
+            print("Errors occurred:", file=sys.stderr)
+            for e in errors:
+                print(f"  - {e}", file=sys.stderr)
+            sys.exit(1)
+
+    # Class parsing
+    class_id = None
+    class_name = args.class_arg
+    try:
+        class_id = int(args.class_arg)
+        class_name = f"class_{class_id}"
+    except ValueError:
+        pass
+
+    # ID calculation
+    max_id = 0
+    if os.path.exists(csv_path):
+        try:
+            with open(csv_path, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                if reader.fieldnames and "det_id" in reader.fieldnames:
+                    for row in reader:
+                        det_str = row.get("det_id")
+                        if det_str:
+                            try:
+                                max_id = max(max_id, int(det_str))
+                            except ValueError:
+                                pass
+        except Exception as e:
+            warnings.append(f"Failed to read results.csv for ID calculation: {e}")
+
+    if os.path.exists(review_path):
+        try:
+            with open(review_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line: continue
+                    try:
+                        record = json.loads(line)
+                        if "det_id" in record and record["det_id"] is not None:
+                            max_id = max(max_id, int(record["det_id"]))
+                        if "annotation_id" in record and record["annotation_id"] is not None:
+                            max_id = max(max_id, int(record["annotation_id"]))
+                    except Exception:
+                        pass
+        except Exception as e:
+            warnings.append(f"Failed to read review.jsonl for ID calculation: {e}")
+
+    new_id = max_id + 1
+
+    tz = timezone(timedelta(hours=9))
+    record = {
+        "type": "annotation",
+        "eval_id": eval_id,
+        "image_id": image_id,
+        "annotation_id": new_id,
+        "source": "human",
+        "geometry_type": geom_type,
+        "note": args.note if args.note is not None else None,
+        "created_at": datetime.now(tz).isoformat()
+    }
+    if class_id is not None:
+        record["class_id"] = class_id
+    record["class_name"] = class_name
+    record.update(geom_data)
+
+    try:
+        with open(review_path, "a", encoding="utf-8") as rf:
+            rf.write(json.dumps(record, ensure_ascii=False) + "\n")
+        payload["appended_record"] = record
+    except Exception as e:
+        errors.append(f"Failed to write to review.jsonl: {e}")
+
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        if errors:
+            print("Errors occurred:")
+            for e in errors:
+                print(f"  - {e}")
+        else:
+            print("=" * 70)
+            print(" YOLO-Lab Review Record Added (annotation)")
+            print("=" * 70)
+            print(f"Eval ID:       {eval_id}")
+            print(f"Image ID:      {image_id}")
+            print(f"Annotation ID: {new_id}")
+            print(f"Class:         {class_name}" + (f" (ID: {class_id})" if class_id is not None else ""))
+            print(f"Geometry:      {geom_type}")
+            print(f"Note:          {record['note']}")
+            print(f"Created At:    {record['created_at']}")
+            print(f"Review Path:   {payload['review_jsonl_path']}")
+            print("=" * 70)
+
+
 def compute_summary(eval_id, runs_root):
     warnings = []
     errors = []
@@ -887,12 +1076,13 @@ def compute_summary(eval_id, runs_root):
             "total_records": 0,
             "raw_record_count": 0,
             "active_review_count": 0,
-            "by_type": {"detection": 0, "image": 0},
+            "by_type": {"detection": 0, "image": 0, "annotation": 0},
             "by_status": {},
-            "by_status_and_type": {"detection": {}, "image": {}}
+            "by_status_and_type": {"detection": {}, "image": {}, "annotation": {}}
         },
         "detection_reviews": {},
         "image_reviews": {},
+        "annotations": {},
         "problem_candidates": [],
         "warnings": warnings,
         "errors": errors
@@ -942,7 +1132,7 @@ def compute_summary(eval_id, runs_root):
                                 det_id = int(det_str)
                             except ValueError:
                                 det_id = det_str
-                            
+
                             try:
                                 class_id = int(row["class_id"]) if row.get("class_id") is not None else None
                             except ValueError:
@@ -977,7 +1167,7 @@ def compute_summary(eval_id, runs_root):
                         if img_id:
                             unique_images.add(img_id)
             csv_image_count = len(unique_images)
-            
+
             # Fill counts if not already set by manifest
             if result["result_counts"]["image_count"] is None:
                 result["result_counts"]["image_count"] = csv_image_count
@@ -992,6 +1182,7 @@ def compute_summary(eval_id, runs_root):
     review_path = os.path.join(run_dir, "review.jsonl")
     detection_states = {}
     image_states = {}
+    annotation_records = {}
     total_records = 0
 
     if os.path.exists(review_path):
@@ -1008,9 +1199,14 @@ def compute_summary(eval_id, runs_root):
                         if r_type == "detection":
                             det_id = str(record.get("det_id"))
                             detection_states[det_id] = record
+
                         elif r_type == "image":
                             image_id = str(record.get("image_id"))
                             image_states[image_id] = record
+                        elif r_type == "annotation":
+                            ann_id = str(record.get("annotation_id"))
+                            annotation_records[ann_id] = record
+
                         else:
                             warnings.append(f"review.jsonl line {line_idx}: Unknown record type '{r_type}'")
                     except Exception as e:
@@ -1050,10 +1246,10 @@ def compute_summary(eval_id, runs_root):
         }
 
     # Build counts
-    active_count = len(detection_states) + len(image_states)
-    by_type = {"detection": len(detection_states), "image": len(image_states)}
+    active_count = len(detection_states) + len(image_states) + len(annotation_records)
+    by_type = {"detection": len(detection_states), "image": len(image_states), "annotation": len(annotation_records)}
     by_status = {}
-    by_status_and_type = {"detection": {}, "image": {}}
+    by_status_and_type = {"detection": {}, "image": {}, "annotation": {}}
 
     # Process detections counts
     for det_id, rec in detection_states.items():
@@ -1062,6 +1258,7 @@ def compute_summary(eval_id, runs_root):
             by_status[status] = by_status.get(status, 0) + 1
             by_status_and_type["detection"][status] = by_status_and_type["detection"].get(status, 0) + 1
 
+
     # Process image counts
     for image_id, rec in image_states.items():
         status = rec.get("status")
@@ -1069,6 +1266,12 @@ def compute_summary(eval_id, runs_root):
             by_status[status] = by_status.get(status, 0) + 1
             by_status_and_type["image"][status] = by_status_and_type["image"].get(status, 0) + 1
 
+    # Process annotation counts
+    for ann_id, rec in annotation_records.items():
+        status = rec.get("status")
+        if status:
+            by_status[status] = by_status.get(status, 0) + 1
+            by_status_and_type["annotation"][status] = by_status_and_type["annotation"].get(status, 0) + 1
     # Candidates list
     candidates = []
     # Detections candidates
@@ -1076,11 +1279,11 @@ def compute_summary(eval_id, runs_root):
         status = rec.get("status")
         if status in problem_statuses:
             det_details = detections_map.get(det_id, {})
-            
+
             image_id = det_details.get("image_id")
             source_image = det_details.get("source_image") or ""
             ext = os.path.splitext(source_image)[1]
-            
+
             copied_image_path = os.path.normpath(os.path.join(run_dir, "images", f"{image_id}{ext}")) if image_id else None
             overlay_image_path = os.path.normpath(os.path.join(run_dir, "overlays", f"{image_id}_result.jpg")) if image_id else None
             prediction_json_path = os.path.normpath(os.path.join(run_dir, "predictions", f"{image_id}.json")) if image_id else None
@@ -1102,6 +1305,7 @@ def compute_summary(eval_id, runs_root):
                 "overlay_image_path": overlay_image_path,
                 "prediction_json_path": prediction_json_path
             })
+
     # Image candidates
     for image_id, rec in image_states.items():
         status = rec.get("status")
@@ -1109,7 +1313,7 @@ def compute_summary(eval_id, runs_root):
             pred_json_path = os.path.normpath(os.path.join(run_dir, "predictions", f"{image_id}.json"))
             source_image = ""
             copied_image_path = None
-            
+
             if os.path.exists(pred_json_path):
                 try:
                     with open(pred_json_path, "r", encoding="utf-8") as f:
@@ -1123,7 +1327,7 @@ def compute_summary(eval_id, runs_root):
                     if det.get("image_id") == image_id:
                         source_image = det.get("source_image", "")
                         break
-            
+
             ext = os.path.splitext(source_image)[1] if source_image else ".jpg"
             if not source_image:
                 images_dir = os.path.join(run_dir, "images")
@@ -1137,7 +1341,7 @@ def compute_summary(eval_id, runs_root):
                                 break
                     except Exception:
                         pass
-            
+
             if copied_image_path is None:
                 copied_image_path = os.path.normpath(os.path.join(run_dir, "images", f"{image_id}{ext}"))
 
@@ -1162,6 +1366,72 @@ def compute_summary(eval_id, runs_root):
                 "prediction_json_path": prediction_json_path
             })
 
+    # Annotation candidates
+    for ann_id, rec in annotation_records.items():
+        image_id = rec.get("image_id")
+
+        pred_json_path = os.path.normpath(os.path.join(run_dir, "predictions", f"{image_id}.json"))
+        source_image = ""
+        copied_image_path = None
+
+        if os.path.exists(pred_json_path):
+            try:
+                with open(pred_json_path, "r", encoding="utf-8") as f:
+                    pred_data = json.load(f)
+                    source_image = pred_data.get("source_image", "")
+            except Exception:
+                pass
+
+        if not source_image:
+            for det in detections_map.values():
+                if det.get("image_id") == image_id:
+                    source_image = det.get("source_image", "")
+                    break
+
+        ext = os.path.splitext(source_image)[1] if source_image else ".jpg"
+        if not source_image:
+            images_dir = os.path.join(run_dir, "images")
+            if os.path.exists(images_dir) and os.path.isdir(images_dir):
+                try:
+                    for f in os.listdir(images_dir):
+                        name, f_ext = os.path.splitext(f)
+                        if name == image_id:
+                            ext = f_ext
+                            copied_image_path = os.path.normpath(os.path.join(images_dir, f))
+                            break
+                except Exception:
+                    pass
+
+        if copied_image_path is None:
+            copied_image_path = os.path.normpath(os.path.join(run_dir, "images", f"{image_id}{ext}"))
+
+        overlay_image_path = os.path.normpath(os.path.join(run_dir, "overlays", f"{image_id}_result.jpg"))
+
+        cand = {
+            "type": "annotation",
+            "eval_id": eval_id,
+            "det_id": None,
+            "annotation_id": rec.get("annotation_id"),
+            "image_id": image_id,
+            "status": rec.get("status"),
+            "note": rec.get("note"),
+            "class_id": rec.get("class_id"),
+            "class_name": rec.get("class_name"),
+            "target_class": None,
+            "geometry_type": rec.get("geometry_type"),
+            "created_at": rec.get("created_at"),
+            "source_image": source_image,
+            "copied_image_path": copied_image_path,
+            "overlay_image_path": overlay_image_path,
+            "prediction_json_path": pred_json_path
+        }
+        if "bbox_xyxy" in rec: cand["bbox_xyxy"] = rec["bbox_xyxy"]
+        if "polygon_xy" in rec: cand["polygon_xy"] = rec["polygon_xy"]
+        if "obb_xywhr" in rec: cand["obb_xywhr"] = rec["obb_xywhr"]
+        cand["bbox"] = rec.get("bbox_xyxy")
+
+        candidates.append(cand)
+
     # Fill result
     result["review_counts"]["total_records"] = total_records
     result["review_counts"]["raw_record_count"] = total_records
@@ -1171,6 +1441,7 @@ def compute_summary(eval_id, runs_root):
     result["review_counts"]["by_status_and_type"] = by_status_and_type
     result["detection_reviews"] = det_reviews_out
     result["image_reviews"] = img_reviews_out
+    result["annotations"] = annotation_records
     result["problem_candidates"] = candidates
 
     return result
@@ -1286,7 +1557,7 @@ def run_export_candidates(args):
     raw_candidates = summary_data["problem_candidates"]
     filtered_candidates = []
     for cand in raw_candidates:
-        if cand.get("status") in selected_statuses:
+        if cand.get("status") in selected_statuses or cand.get("type") == "annotation":
             filtered_candidates.append(cand)
 
     json_out_path = os.path.join(out_dir, "candidates.json")
@@ -1313,12 +1584,16 @@ def run_export_candidates(args):
         with open(csv_out_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow([
-                "eval_id", "type", "status", "det_id", "image_id", 
+                "eval_id", "type", "status", "det_id", "image_id",
                 "source_image", "copied_image_path", "overlay_image_path", "prediction_json_path",
                 "class_id", "class_name", "target_class", "bbox", "note", "created_at"
             ])
             for cand in filtered_candidates:
-                bbox_str = json.dumps(cand.get("bbox")) if cand.get("bbox") is not None else ""
+                if cand.get("type") == "annotation":
+                    geom_data = {k: v for k, v in cand.items() if k in ["bbox_xyxy", "polygon_xy", "obb_xywhr"]}
+                    bbox_str = json.dumps(geom_data)
+                else:
+                    bbox_str = json.dumps(cand.get("bbox")) if cand.get("bbox") is not None else ""
                 writer.writerow([
                     cand.get("eval_id"),
                     cand.get("type"),
@@ -1416,7 +1691,22 @@ def main():
     parser_mark_image.add_argument("--runs-root", type=str, default="runs", help="Root directory for runs")
     parser_mark_image.add_argument("--json", action="store_true", help="Output exact JSON data for program parsing")
 
+
+    # add-annotation subcommand
+    parser_add_ann = subparsers.add_parser("add-annotation", help="Append a human-supplied geometry annotation")
+    parser_add_ann.add_argument("eval_id", type=str, help="Evaluation run ID")
+    parser_add_ann.add_argument("image_id", type=str, help="Image ID (e.g. 000001)")
+    parser_add_ann.add_argument("--class", dest="class_arg", type=str, required=True, help="Target class name or ID")
+    parser_add_ann.add_argument("--geometry", type=str, choices=["bbox", "polygon", "obb"], required=True, help="Geometry type")
+    parser_add_ann.add_argument("--bbox", type=str, help="Bounding box coordinates 'x1,y1,x2,y2'")
+    parser_add_ann.add_argument("--polygon", type=str, help="Polygon points 'x1,y1;x2,y2;x3,y3;...'")
+    parser_add_ann.add_argument("--obb-xywhr", type=str, help="OBB parameters 'cx,cy,w,h,r'")
+    parser_add_ann.add_argument("--note", type=str, help="Optional text note")
+    parser_add_ann.add_argument("--runs-root", type=str, default="runs", help="Root directory for runs")
+    parser_add_ann.add_argument("--json", action="store_true", help="Output exact JSON data for program parsing")
+
     # summary subcommand
+
     parser_summary = subparsers.add_parser("summary", help="Summarize review records for an evaluation run")
     parser_summary.add_argument("eval_id", type=str, help="Evaluation run ID")
     parser_summary.add_argument("--runs-root", type=str, default="runs", help="Root directory for runs")
@@ -1438,8 +1728,12 @@ def main():
         run_show(args)
     elif args.command == "mark":
         run_mark(args)
+
     elif args.command == "mark-image":
         run_mark_image(args)
+    elif args.command == "add-annotation":
+        run_add_annotation(args)
+
     elif args.command == "summary":
         run_summary(args)
     elif args.command == "export-candidates":

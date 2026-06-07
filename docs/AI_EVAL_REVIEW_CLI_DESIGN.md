@@ -201,6 +201,12 @@ Image-level record:
 {"type":"image","eval_id":"id0001","image_id":"000238","status":"missed","target_class":"suitcase","note":"右下のスーツケース未検出"}
 ```
 
+Annotation-level record:
+
+```json
+{"type":"annotation","eval_id":"id0001","image_id":"000238","annotation_id":12,"source":"human","geometry_type":"bbox","class_name":"suitcase","bbox_xyxy":[10,20,30,40]}
+```
+
 ## Overlay Drawing
 
 Overlay images should be usable in an ordinary image viewer.
@@ -295,6 +301,24 @@ Example:
 ```powershell
 .\.venv\Scripts\python.exe .\ai-eval.py mark-image id0001 000238 --status missed --target-class suitcase --note "右下のスーツケース未検出"
 ```
+
+### add-annotation
+
+Append a human-supplied geometry annotation for an image in an evaluation run.
+
+The target is `eval_id` + `image_id`, not `det_id`. This means annotation records can be added even when an image has zero detections.
+
+Examples:
+
+```powershell
+.\.venv\Scripts\python.exe .\ai-eval.py add-annotation id0001 000238 --class suitcase --geometry bbox --bbox 120,80,300,260
+
+.\.venv\Scripts\python.exe .\ai-eval.py add-annotation id0001 000238 --class suitcase --geometry polygon --polygon "120,80;300,90;280,260;110,240"
+
+.\.venv\Scripts\python.exe .\ai-eval.py add-annotation id0001 000238 --class suitcase --geometry obb --obb-xywhr 210,170,180,90,0.35
+```
+
+`annotation_id` is assigned by the program from the maximum existing `det_id` and `annotation_id` plus one. `add-annotation` appends to `review.jsonl` and must not mutate `results.csv` or `predictions/*.json`.
 
 ### summary
 

@@ -358,6 +358,24 @@ unknown
 
 Use this when the issue is a missed object, not a bad detection row.
 
+### Add Human Annotation
+
+```powershell
+.\.venv\Scripts\python.exe .\ai-eval.py add-annotation id0001 000238 --class suitcase --geometry bbox --bbox 120,80,300,260 --json
+```
+
+Use this when the human or AI supplies corrected geometry for a missed object. The second positional argument is `image_id`, not `det_id`, so this also works when the image has zero detections.
+
+Supported geometry options:
+
+```text
+--geometry bbox --bbox x1,y1,x2,y2
+--geometry polygon --polygon "x1,y1;x2,y2;x3,y3"
+--geometry obb --obb-xywhr cx,cy,w,h,r
+```
+
+The command appends a `type: "annotation"` record with `source: "human"` to `review.jsonl`. It auto-assigns `annotation_id` from the maximum existing `det_id` / `annotation_id` plus one. It does not mutate `results.csv` or `predictions/*.json`.
+
 ### Summarize Reviews
 
 ```powershell
