@@ -314,6 +314,8 @@ runs/id0001/
 
 `results.csv` stays a lightweight bbox-oriented instance index. Rich instance geometry is stored in `predictions/*.json`: segmentation runs can include `polygon_xy` / `polygon_xyn`, and OBB runs can include `obb_xywhr` / `obb_xyxyxyxy`. `--geometry bbox` suppresses these rich geometry fields while preserving bbox output.
 
+`evaluate --json` also includes run-level timing metadata. Each `predictions/<image_id>.json` includes image-level timing such as predict, overlay, and total image processing time.
+
 Current geometry support is instance-level: detect, segment, and OBB. Classification and semantic segmentation are future output families because they are image-level or otherwise different from instance geometry, and they are not implemented in `ai-eval.py` yet.
 
 Detection IDs are global within an evaluation run. A human can review an overlay and say:
@@ -389,6 +391,68 @@ The command appends a `type: "annotation"` record with `source: "human"` to `rev
 ```
 
 Use exported candidates as material for dataset correction, conversion, or light fine-tune preparation.
+
+## Frame Sequence Tracking
+
+Script:
+
+```text
+ai-track.py
+```
+
+Purpose:
+
+- Track detections across an already-extracted image sequence.
+- Use caller-supplied `--fps` to compute per-frame time.
+- Save overlays, per-frame detections, track assignments, lifecycle events, and a track summary.
+
+This command is intentionally separate from `ai-eval.py`. `ai-eval.py` is for evaluation and review runs; `ai-track.py` is for frame-sequence tracking.
+
+Arguments:
+
+```text
+--model MODEL
+--input INPUT
+--fps FPS
+--out OUT
+--conf CONF
+--imgsz IMGSZ
+--classes CLASSES
+--min-box-width MIN_BOX_WIDTH
+--min-box-height MIN_BOX_HEIGHT
+--min-box-area MIN_BOX_AREA
+--roi ROI
+--save-overlays all|none
+--tracker simple
+--iou-threshold IOU_THRESHOLD
+--max-missing-frames MAX_MISSING_FRAMES
+--force
+--json
+```
+
+Example:
+
+```powershell
+.\.venv\Scripts\python.exe .\ai-track.py --model .\models\standard\yolov8s-seg.pt --input .\samples\002 --fps 5 --out .\runs\track_002 --conf 0.25 --classes truck,refrigerator --min-box-width 500 --json
+```
+
+Output directory shape:
+
+```text
+runs/track_002/
+  manifest.json
+  overlays/
+  detections.jsonl
+  tracks.jsonl
+  events.jsonl
+  track_summary.json
+```
+
+Notes:
+
+- The first version expects an image sequence folder, not a video file.
+- The first version uses bbox tracking only, even when the model is segmentation-capable.
+- The first version does not automatically count line crossings; it provides `track_id` continuity and summaries for later counting logic.
 
 ## Validation Probe
 

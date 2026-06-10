@@ -7,6 +7,7 @@ import shutil
 import logging
 import contextlib
 import io
+import time
 from datetime import datetime, timezone, timedelta
 
 def run_evaluate(args):
@@ -39,6 +40,15 @@ def run_evaluate(args):
         "manifest_path": None,
         "results_csv_path": None,
         "review_jsonl_path": None,
+        "timing": {
+            "total_eval_seconds": 0.0,
+            "avg_image_ms": 0.0,
+            "images_per_second": 0.0,
+            "total_predict_ms": 0.0,
+            "avg_predict_ms": 0.0,
+            "total_overlay_ms": 0.0,
+            "avg_overlay_ms": 0.0
+        },
         "warnings": warnings,
         "errors": errors
     }
@@ -151,20 +161,35 @@ def run_evaluate(args):
 
     global_det_id = 1
     processed_images = 0
+    total_predict_ms = 0.0
+    total_overlay_ms = 0.0
+    eval_started = time.perf_counter()
 
     for idx, fname in enumerate(image_files):
+        image_started = time.perf_counter()
         image_id = f"{idx + 1:06d}"
         src_img_path = os.path.join(resolved_input, fname)
         ext = os.path.splitext(fname)[1]
         dest_img_path = os.path.join(images_out_dir, f"{image_id}{ext}")
         dest_overlay_path = os.path.join(overlays_out_dir, f"{image_id}_result.jpg")
         dest_pred_path = os.path.join(predictions_out_dir, f"{image_id}.json")
+        image_timing = {
+            "copy_ms": 0.0,
+            "predict_ms": 0.0,
+            "extract_ms": 0.0,
+            "overlay_ms": 0.0,
+            "write_prediction_ms": 0.0,
+            "total_image_ms": 0.0
+        }
 
         # Copy original image
         try:
+            copy_started = time.perf_counter()
             shutil.copy2(src_img_path, dest_img_path)
+            image_timing["copy_ms"] = (time.perf_counter() - copy_started) * 1000.0
         except Exception as e:
             warnings.append(f"Failed to copy image {fname} to runs: {e}")
+            image_timing["total_image_ms"] = (time.perf_counter() - image_started) * 1000.0
             continue
 
         # Inference
@@ -175,14 +200,19 @@ def run_evaluate(args):
             if args.imgsz is not None:
                 predict_kwargs["imgsz"] = args.imgsz
 
+            predict_started = time.perf_counter()
             with contextlib.redirect_stdout(f_stdout), contextlib.redirect_stderr(f_stderr):
                 results = model.predict(**predict_kwargs)
             result = results[0]
+            image_timing["predict_ms"] = (time.perf_counter() - predict_started) * 1000.0
+            total_predict_ms += image_timing["predict_ms"]
         except Exception as e:
             warnings.append(f"Prediction failed on image {fname}: {e}")
+            image_timing["total_image_ms"] = (time.perf_counter() - image_started) * 1000.0
             continue
 
         # Extract instances
+        extract_started = time.perf_counter()
         img_detections = []
 
         # Check available geometry
@@ -260,9 +290,11 @@ def run_evaluate(args):
                 ])
 
                 global_det_id += 1
+        image_timing["extract_ms"] = (time.perf_counter() - extract_started) * 1000.0
 
         # Draw overlay image
         try:
+            overlay_started = time.perf_counter()
             img_data = cv2.imread(src_img_path)
             if img_data is not None:
                 # Top level evaluation text
@@ -326,10 +358,14 @@ def run_evaluate(args):
                         cv2.putText(img_data, label, (x1 + 2, y1 - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
 
                 cv2.imwrite(dest_overlay_path, img_data)
+                image_timing["overlay_ms"] = (time.perf_counter() - overlay_started) * 1000.0
+                total_overlay_ms += image_timing["overlay_ms"]
             else:
                 warnings.append(f"Failed to read image for overlay: {src_img_path}")
+                image_timing["overlay_ms"] = (time.perf_counter() - overlay_started) * 1000.0
         except Exception as e:
             warnings.append(f"Failed to draw overlay for image {fname}: {e}")
+            image_timing["overlay_ms"] = (time.perf_counter() - overlay_started) * 1000.0
 
         # Save prediction json
         try:
@@ -340,11 +376,20 @@ def run_evaluate(args):
                 "overlay_image": f"overlays/{image_id}_result.jpg",
                 "detections": img_detections
             }
+            write_started = time.perf_counter()
             with open(dest_pred_path, "w", encoding="utf-8") as pf:
+                pred_data["timing"] = image_timing
+                json.dump(pred_data, pf, indent=2)
+            image_timing["write_prediction_ms"] = (time.perf_counter() - write_started) * 1000.0
+            image_timing["total_image_ms"] = (time.perf_counter() - image_started) * 1000.0
+            with open(dest_pred_path, "w", encoding="utf-8") as pf:
+                pred_data["timing"] = image_timing
                 json.dump(pred_data, pf, indent=2)
         except Exception as e:
             warnings.append(f"Failed to save prediction JSON for image {fname}: {e}")
 
+        if image_timing["total_image_ms"] == 0.0:
+            image_timing["total_image_ms"] = (time.perf_counter() - image_started) * 1000.0
         processed_images += 1
 
     # Close CSV
@@ -354,6 +399,20 @@ def run_evaluate(args):
     manifest_path = os.path.join(resolved_out, "manifest.json")
     try:
         tz = timezone(timedelta(hours=9)) # JST
+        total_eval_seconds = time.perf_counter() - eval_started
+        avg_image_ms = (total_eval_seconds * 1000.0 / processed_images) if processed_images > 0 else 0.0
+        images_per_second = (processed_images / total_eval_seconds) if total_eval_seconds > 0 else 0.0
+        avg_predict_ms = (total_predict_ms / processed_images) if processed_images > 0 else 0.0
+        avg_overlay_ms = (total_overlay_ms / processed_images) if processed_images > 0 else 0.0
+        payload["timing"] = {
+            "total_eval_seconds": total_eval_seconds,
+            "avg_image_ms": avg_image_ms,
+            "images_per_second": images_per_second,
+            "total_predict_ms": total_predict_ms,
+            "avg_predict_ms": avg_predict_ms,
+            "total_overlay_ms": total_overlay_ms,
+            "avg_overlay_ms": avg_overlay_ms
+        }
         manifest_data = {
             "eval_id": eval_id,
             "created_at": datetime.now(tz).isoformat(),
@@ -363,7 +422,8 @@ def run_evaluate(args):
             "conf": args.conf if args.conf is not None else 0.25,
             "imgsz": args.imgsz if args.imgsz is not None else 640,
             "image_count": processed_images,
-            "detection_count": global_det_id - 1
+            "detection_count": global_det_id - 1,
+            "timing": payload["timing"]
         }
         with open(manifest_path, "w", encoding="utf-8") as mf:
             json.dump(manifest_data, mf, indent=2)

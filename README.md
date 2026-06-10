@@ -73,6 +73,8 @@ GPU 前提の検証に進む場合は、PyTorch CUDA wheel の扱いを別途決
 .\.venv\Scripts\python.exe .\ai-eval.py evaluate --model .\models\standard\yolov8s.pt --input .\datasets\images --out .\runs\id0001 --json
 ```
 
+`evaluate --json` には run 全体の timing summary が含まれます。各画像の詳細 timing は `predictions/*.json` に保存されます。
+
 検出IDの詳細確認:
 
 ```powershell
@@ -143,6 +145,14 @@ YOLO から COCO へ変換:
 .\.venv\Scripts\python.exe .\ai-eval-compare-runs.py --before .\runs\eval_base --after .\runs\eval_tuned --json
 ```
 
+画像連番を追跡:
+
+```powershell
+.\.venv\Scripts\python.exe .\ai-track.py --model .\models\standard\yolov8s-seg.pt --input .\samples\002 --fps 5 --out .\runs\track_002 --conf 0.25 --classes truck,refrigerator --min-box-width 500 --json
+```
+
+`ai-track.py` の初期版は動画ファイルを直接読むのではなく、既に切り出された画像連番と `--fps` を入力にします。結果は `manifest.json`, `detections.jsonl`, `tracks.jsonl`, `events.jsonl`, `track_summary.json`, `overlays/` に保存されます。
+
 ## 評価結果の考え方
 
 `ai-eval.py evaluate` は評価ごとに `runs/<eval_id>/` を作ります。
@@ -197,6 +207,7 @@ id0001 の 000238 は suitcase 未検出
 - `ai-dataset-class-edit.py`: YOLO ラベルのクラス修正
 - `ai-dataset-extract-classes.py`: 特定クラス抽出
 - `ai-finetune.py`: 軽量 fine-tune
+- `ai-track.py`: 画像連番 tracking / track summary
 - `ai-eval-compare-runs.py`: 評価結果の before/after 比較
 - `ai-onnx-probe.py`: ONNX モデル確認
 - `ai-onnx-raw-inference-probe.py`: ONNXRuntime 生推論確認
