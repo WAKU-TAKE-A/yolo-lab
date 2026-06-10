@@ -615,8 +615,9 @@ Important:
 - A one-epoch smoke run proves the pipeline, not accuracy.
 - Do not claim model improvement unless real validation or evaluation evidence supports it.
 - `--patience` controls Ultralytics early stopping. Smaller values can shorten tiny subset experiments, but may stop real training too early when validation metrics are noisy.
-- `--train-scope head` is useful for quick adaptation when the existing YOLO backbone is likely good enough.
+- For small extracted datasets, prefer starting with `--train-scope head --lr0 0.001`. This keeps the pretrained backbone stable and adapts the YOLO head first.
 - Full-layer fine-tuning is still needed when the visual domain is very different from the source model or when head-only training underfits.
+- Do not treat head-only success as a universal accuracy claim. Confirm with base evaluation, tuned evaluation, and `ai-eval-compare-runs.py`.
 
 ## Before/After Evaluation Comparison
 
@@ -672,8 +673,9 @@ base model evaluation
 2. Probe environment and GPU availability.
 3. Probe model and dataset.
 4. Confirm whether the standard model already solves the problem.
-5. If fine-tune is justified, start with a small explicit run and compare before/after evaluations.
-6. Treat smoke results as pipeline proof only.
+5. If fine-tune is justified on a small dataset, start with `--train-scope head --lr0 0.001`.
+6. Compare base and tuned evaluations before trying full-layer fine-tuning.
+7. Treat smoke results as pipeline proof only.
 
 ### User asks: "Convert this dataset"
 
