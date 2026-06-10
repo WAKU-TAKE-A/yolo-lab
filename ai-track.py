@@ -74,6 +74,211 @@ def append_jsonl(path, record):
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
+def add_non_negative_error(errors, value, name):
+    if value is not None and value < 0:
+        errors.append(f"{name} must be 0 or greater")
+
+
+def add_threshold_error(errors, value, name):
+    if value < 0.0 or value > 1.0:
+        errors.append(f"{name} must be between 0 and 1")
+
+
+def validate_min_max_pair(errors, minimum, maximum, min_name, max_name):
+    if minimum is not None and maximum is not None and minimum > maximum:
+        errors.append(f"{min_name} must be less than or equal to {max_name}")
+
+
+def detection_passes_filters(det, args, roi, allowed_ids, allowed_names):
+    cls_id = det["class_id"]
+    cls_name = det["class_name"]
+    bbox_width = det["bbox_width"]
+    bbox_height = det["bbox_height"]
+    bbox_area = det["bbox_area"]
+
+    if allowed_ids is not None or allowed_names is not None:
+        id_ok = allowed_ids is not None and cls_id in allowed_ids
+        name_ok = allowed_names is not None and cls_name in allowed_names
+        if not id_ok and not name_ok:
+            return False
+    if args.min_box_width is not None and bbox_width < args.min_box_width:
+        return False
+    if args.max_box_width is not None and bbox_width > args.max_box_width:
+        return False
+    if args.min_box_height is not None and bbox_height < args.min_box_height:
+        return False
+    if args.max_box_height is not None and bbox_height > args.max_box_height:
+        return False
+    if args.min_box_area is not None and bbox_area < args.min_box_area:
+        return False
+    if args.max_box_area is not None and bbox_area > args.max_box_area:
+        return False
+    if not bbox_center_in_roi(det["bbox_xyxy"], roi):
+        return False
+    return True
+
+
+def can_match_track(track, det, class_agnostic_tracking):
+    return class_agnostic_tracking or track["class_id"] == det["class_id"]
+
+
+def greedy_match(active_tracks, frame_detections, candidate_track_ids, candidate_det_indexes, iou_threshold, class_agnostic_tracking):
+    matches = []
+    if not candidate_track_ids or not candidate_det_indexes:
+        return matches
+
+    pairs = []
+    for track_id in candidate_track_ids:
+        track = active_tracks[track_id]
+        for det_idx in candidate_det_indexes:
+            det = frame_detections[det_idx]
+            if not can_match_track(track, det, class_agnostic_tracking):
+                continue
+            iou = bbox_iou(track["last_bbox"], det["bbox_xyxy"])
+            if iou >= iou_threshold:
+                pairs.append((iou, track_id, det_idx))
+
+    pairs.sort(reverse=True)
+    used_tracks = set()
+    used_dets = set()
+    for iou, track_id, det_idx in pairs:
+        if track_id in used_tracks or det_idx in used_dets:
+            continue
+        used_tracks.add(track_id)
+        used_dets.add(det_idx)
+        matches.append((track_id, det_idx, iou))
+    return matches
+
+
+def create_track_record(track_id, det, frame_id, frame_index, time_sec, state, match_stage):
+    return {
+        "frame_id": frame_id,
+        "frame_index": frame_index,
+        "time_sec": time_sec,
+        "track_id": track_id,
+        "det_id": det["det_id"],
+        "class_id": det["class_id"],
+        "class_name": det["class_name"],
+        "confidence": det["confidence"],
+        "bbox_xyxy": det["bbox_xyxy"],
+        "state": state,
+        "match_stage": match_stage,
+        "counted": False,
+    }
+
+
+def apply_match(
+    active_tracks,
+    events_jsonl_path,
+    tracks_jsonl_path,
+    frame_track_assignments,
+    frame_id,
+    frame_index,
+    time_sec,
+    det,
+    track_id,
+    match_stage,
+):
+    track = active_tracks[track_id]
+    if track["state"] == "lost":
+        append_jsonl(events_jsonl_path, {
+            "event": "track_resumed",
+            "track_id": track_id,
+            "frame_id": frame_id,
+            "frame_index": frame_index,
+            "time_sec": time_sec,
+        })
+    track["state"] = "active"
+    track["missing_frames"] = 0
+    track["last_bbox"] = det["bbox_xyxy"]
+    track["last_frame"] = frame_id
+    track["last_frame_index"] = frame_index
+    track["last_time_sec"] = time_sec
+    track["matched_frame_count"] += 1
+    track["max_confidence"] = max(track["max_confidence"], det["confidence"])
+    track["max_bbox_area"] = max(track["max_bbox_area"], det["bbox_area"])
+    if match_stage == "low":
+        track["low_score_match_count"] += 1
+    append_jsonl(tracks_jsonl_path, create_track_record(track_id, det, frame_id, frame_index, time_sec, "active", match_stage))
+    frame_track_assignments[det["det_id"]] = {"track_id": track_id, "match_stage": match_stage}
+
+
+def start_new_track(
+    active_tracks,
+    events_jsonl_path,
+    tracks_jsonl_path,
+    frame_track_assignments,
+    frame_id,
+    frame_index,
+    time_sec,
+    det,
+    track_id,
+):
+    active_tracks[track_id] = {
+        "track_id": track_id,
+        "class_id": det["class_id"],
+        "class_name": det["class_name"],
+        "first_frame": frame_id,
+        "last_frame": frame_id,
+        "first_frame_index": frame_index,
+        "last_frame_index": frame_index,
+        "first_time_sec": time_sec,
+        "last_time_sec": time_sec,
+        "matched_frame_count": 1,
+        "max_confidence": det["confidence"],
+        "max_bbox_area": det["bbox_area"],
+        "low_score_match_count": 0,
+        "missing_frames": 0,
+        "state": "active",
+        "last_bbox": det["bbox_xyxy"],
+    }
+    append_jsonl(events_jsonl_path, {
+        "event": "track_started",
+        "track_id": track_id,
+        "frame_id": frame_id,
+        "frame_index": frame_index,
+        "time_sec": time_sec,
+    })
+    append_jsonl(tracks_jsonl_path, create_track_record(track_id, det, frame_id, frame_index, time_sec, "active", "new"))
+    frame_track_assignments[det["det_id"]] = {"track_id": track_id, "match_stage": "new"}
+
+
+def finalize_unmatched_tracks(active_tracks, matched_track_ids, new_track_ids, events_jsonl_path, frame_id, frame_index, time_sec, max_missing_frames):
+    ended_now = []
+    for track_id, track in active_tracks.items():
+        if track_id in matched_track_ids or track_id in new_track_ids:
+            continue
+        track["missing_frames"] += 1
+        if track["missing_frames"] == 1 and track["state"] != "lost":
+            track["state"] = "lost"
+            append_jsonl(events_jsonl_path, {
+                "event": "track_lost",
+                "track_id": track_id,
+                "frame_id": frame_id,
+                "frame_index": frame_index,
+                "time_sec": time_sec,
+            })
+        if track["missing_frames"] > max_missing_frames:
+            track["state"] = "ended"
+            append_jsonl(events_jsonl_path, {
+                "event": "track_ended",
+                "track_id": track_id,
+                "frame_id": frame_id,
+                "frame_index": frame_index,
+                "time_sec": time_sec,
+            })
+            ended_now.append(track_id)
+    return ended_now
+
+
+def detect_boxes(result):
+    if hasattr(result, "boxes") and result.boxes is not None:
+        return result.boxes
+    if hasattr(result, "obb") and result.obb is not None:
+        return result.obb
+    return None
+
+
 def run_track(args):
     warnings = []
     errors = []
@@ -95,6 +300,7 @@ def run_track(args):
         "events_jsonl_path": None,
         "track_summary_path": None,
         "overlays_dir": None,
+        "effective_conf": None,
         "timing": {
             "total_track_seconds": 0.0,
             "avg_frame_ms": 0.0,
@@ -114,20 +320,27 @@ def run_track(args):
         errors.append(f"Input path is not a directory: {args.input}")
     if args.fps <= 0:
         errors.append("--fps must be greater than 0")
-    if args.save_overlays not in {"all", "none"}:
-        errors.append(f"Unsupported --save-overlays value: {args.save_overlays}")
-    if args.tracker != "simple":
-        errors.append(f"Unsupported --tracker value: {args.tracker}")
     if args.iou_threshold < 0.0 or args.iou_threshold > 1.0:
         errors.append("--iou-threshold must be between 0 and 1")
     if args.max_missing_frames < 0:
         errors.append("--max-missing-frames must be 0 or greater")
-    if args.min_box_width is not None and args.min_box_width < 0:
-        errors.append("--min-box-width must be 0 or greater")
-    if args.min_box_height is not None and args.min_box_height < 0:
-        errors.append("--min-box-height must be 0 or greater")
-    if args.min_box_area is not None and args.min_box_area < 0:
-        errors.append("--min-box-area must be 0 or greater")
+
+    add_non_negative_error(errors, args.min_box_width, "--min-box-width")
+    add_non_negative_error(errors, args.max_box_width, "--max-box-width")
+    add_non_negative_error(errors, args.min_box_height, "--min-box-height")
+    add_non_negative_error(errors, args.max_box_height, "--max-box-height")
+    add_non_negative_error(errors, args.min_box_area, "--min-box-area")
+    add_non_negative_error(errors, args.max_box_area, "--max-box-area")
+
+    validate_min_max_pair(errors, args.min_box_width, args.max_box_width, "--min-box-width", "--max-box-width")
+    validate_min_max_pair(errors, args.min_box_height, args.max_box_height, "--min-box-height", "--max-box-height")
+    validate_min_max_pair(errors, args.min_box_area, args.max_box_area, "--min-box-area", "--max-box-area")
+
+    add_threshold_error(errors, args.track_high_threshold, "--track-high-threshold")
+    add_threshold_error(errors, args.track_low_threshold, "--track-low-threshold")
+    add_threshold_error(errors, args.new_track_threshold, "--new-track-threshold")
+    if args.track_low_threshold > args.track_high_threshold:
+        errors.append("--track-low-threshold must be less than or equal to --track-high-threshold")
 
     allowed_ids = None
     allowed_names = None
@@ -141,6 +354,17 @@ def run_track(args):
             roi = parse_roi_arg(args.roi)
         except Exception as e:
             errors.append(f"Failed to parse --roi: {e}")
+
+    if args.tracker == "bytetrack":
+        effective_conf = args.conf if args.conf is not None else args.track_low_threshold
+        if args.conf is not None and args.conf > args.track_low_threshold:
+            warnings.append(
+                f"--conf {args.conf} is greater than --track-low-threshold {args.track_low_threshold}; "
+                "low-score recovery is limited by detector confidence."
+            )
+    else:
+        effective_conf = args.conf if args.conf is not None else 0.25
+    payload["effective_conf"] = effective_conf
 
     if os.path.exists(resolved_out):
         if not args.force:
@@ -237,10 +461,9 @@ def run_track(args):
         time_sec = frame_index / float(args.fps)
         src_img_path = os.path.join(resolved_input, fname)
         source_image = os.path.relpath(src_img_path, os.getcwd())
+        frame_track_assignments = {}
 
-        predict_kwargs = {"source": src_img_path, "save": False, "verbose": False}
-        if args.conf is not None:
-            predict_kwargs["conf"] = args.conf
+        predict_kwargs = {"source": src_img_path, "save": False, "verbose": False, "conf": effective_conf}
         if args.imgsz is not None:
             predict_kwargs["imgsz"] = args.imgsz
 
@@ -256,12 +479,7 @@ def run_track(args):
             warnings.append(f"Prediction failed on frame {fname}: {e}")
             continue
 
-        boxes = None
-        if hasattr(result, "boxes") and result.boxes is not None:
-            boxes = result.boxes
-        elif hasattr(result, "obb") and result.obb is not None:
-            boxes = result.obb
-
+        boxes = detect_boxes(result)
         if boxes is not None:
             for i in range(len(boxes)):
                 cls_id = int(boxes.cls[i].item())
@@ -272,26 +490,12 @@ def run_track(args):
                 bbox_height = float(xyxy[3] - xyxy[1])
                 bbox_area = float(max(0.0, bbox_width) * max(0.0, bbox_height))
 
-                if allowed_ids is not None or allowed_names is not None:
-                    id_ok = allowed_ids is not None and cls_id in allowed_ids
-                    name_ok = allowed_names is not None and cls_name in allowed_names
-                    if not id_ok and not name_ok:
-                        continue
-                if args.min_box_width is not None and bbox_width < args.min_box_width:
-                    continue
-                if args.min_box_height is not None and bbox_height < args.min_box_height:
-                    continue
-                if args.min_box_area is not None and bbox_area < args.min_box_area:
-                    continue
-                if not bbox_center_in_roi(xyxy, roi):
-                    continue
-
                 det_record = {
                     "frame_id": frame_id,
                     "frame_index": frame_index,
                     "time_sec": time_sec,
                     "source_image": source_image,
-                    "det_id": next_det_id,
+                    "det_id": None,
                     "class_id": cls_id,
                     "class_name": cls_name,
                     "confidence": conf_val,
@@ -300,142 +504,125 @@ def run_track(args):
                     "bbox_height": bbox_height,
                     "bbox_area": bbox_area,
                 }
+                if not detection_passes_filters(det_record, args, roi, allowed_ids, allowed_names):
+                    continue
+                det_record["det_id"] = next_det_id
+                next_det_id += 1
                 frame_detections.append(det_record)
                 append_jsonl(detections_jsonl_path, det_record)
-                next_det_id += 1
 
-        matches = []
-        if active_tracks and frame_detections:
-            pairs = []
-            for track_id, track in active_tracks.items():
-                for det_idx, det in enumerate(frame_detections):
-                    if track["class_id"] != det["class_id"]:
-                        continue
-                    iou = bbox_iou(track["last_bbox"], det["bbox_xyxy"])
-                    if iou >= args.iou_threshold:
-                        pairs.append((iou, track_id, det_idx))
-            pairs.sort(reverse=True)
-            used_tracks = set()
-            used_dets = set()
-            for iou, track_id, det_idx in pairs:
-                if track_id in used_tracks or det_idx in used_dets:
-                    continue
-                used_tracks.add(track_id)
-                used_dets.add(det_idx)
-                matches.append((track_id, det_idx, iou))
-
+        candidate_track_ids = list(active_tracks.keys())
         matched_track_ids = set()
         matched_det_indexes = set()
         new_track_ids = set()
-        for track_id, det_idx, _ in matches:
-            matched_track_ids.add(track_id)
-            matched_det_indexes.add(det_idx)
-            track = active_tracks[track_id]
-            det = frame_detections[det_idx]
-            if track["state"] == "lost":
-                append_jsonl(events_jsonl_path, {
-                    "event": "track_resumed",
-                    "track_id": track_id,
-                    "frame_id": frame_id,
-                    "frame_index": frame_index,
-                    "time_sec": time_sec,
-                })
-            track["state"] = "active"
-            track["missing_frames"] = 0
-            track["last_bbox"] = det["bbox_xyxy"]
-            track["last_frame"] = frame_id
-            track["last_frame_index"] = frame_index
-            track["last_time_sec"] = time_sec
-            track["matched_frame_count"] += 1
-            track["max_confidence"] = max(track["max_confidence"], det["confidence"])
-            track["max_bbox_area"] = max(track["max_bbox_area"], det["bbox_area"])
 
-            track_record = {
-                "frame_id": frame_id,
-                "frame_index": frame_index,
-                "time_sec": time_sec,
-                "track_id": track_id,
-                "det_id": det["det_id"],
-                "class_id": det["class_id"],
-                "class_name": det["class_name"],
-                "confidence": det["confidence"],
-                "bbox_xyxy": det["bbox_xyxy"],
-                "state": "active",
-                "counted": False,
-            }
-            append_jsonl(tracks_jsonl_path, track_record)
+        if args.tracker == "simple":
+            matches = greedy_match(
+                active_tracks,
+                frame_detections,
+                candidate_track_ids,
+                list(range(len(frame_detections))),
+                args.iou_threshold,
+                args.class_agnostic_tracking,
+            )
+            for track_id, det_idx, _ in matches:
+                matched_track_ids.add(track_id)
+                matched_det_indexes.add(det_idx)
+                apply_match(
+                    active_tracks,
+                    events_jsonl_path,
+                    tracks_jsonl_path,
+                    frame_track_assignments,
+                    frame_id,
+                    frame_index,
+                    time_sec,
+                    frame_detections[det_idx],
+                    track_id,
+                    "simple",
+                )
+        else:
+            high_indexes = [idx for idx, det in enumerate(frame_detections) if det["confidence"] >= args.track_high_threshold]
+            low_indexes = [idx for idx, det in enumerate(frame_detections) if args.track_low_threshold <= det["confidence"] < args.track_high_threshold]
+
+            high_matches = greedy_match(
+                active_tracks,
+                frame_detections,
+                candidate_track_ids,
+                high_indexes,
+                args.iou_threshold,
+                args.class_agnostic_tracking,
+            )
+            for track_id, det_idx, _ in high_matches:
+                matched_track_ids.add(track_id)
+                matched_det_indexes.add(det_idx)
+                apply_match(
+                    active_tracks,
+                    events_jsonl_path,
+                    tracks_jsonl_path,
+                    frame_track_assignments,
+                    frame_id,
+                    frame_index,
+                    time_sec,
+                    frame_detections[det_idx],
+                    track_id,
+                    "high",
+                )
+
+            unmatched_track_ids = [track_id for track_id in candidate_track_ids if track_id not in matched_track_ids]
+            low_matches = greedy_match(
+                active_tracks,
+                frame_detections,
+                unmatched_track_ids,
+                [idx for idx in low_indexes if idx not in matched_det_indexes],
+                args.iou_threshold,
+                args.class_agnostic_tracking,
+            )
+            for track_id, det_idx, _ in low_matches:
+                matched_track_ids.add(track_id)
+                matched_det_indexes.add(det_idx)
+                apply_match(
+                    active_tracks,
+                    events_jsonl_path,
+                    tracks_jsonl_path,
+                    frame_track_assignments,
+                    frame_id,
+                    frame_index,
+                    time_sec,
+                    frame_detections[det_idx],
+                    track_id,
+                    "low",
+                )
 
         for det_idx, det in enumerate(frame_detections):
             if det_idx in matched_det_indexes:
                 continue
+            if args.tracker == "bytetrack" and det["confidence"] < args.new_track_threshold:
+                continue
             track_id = next_track_id
             next_track_id += 1
             new_track_ids.add(track_id)
-            active_tracks[track_id] = {
-                "track_id": track_id,
-                "class_id": det["class_id"],
-                "class_name": det["class_name"],
-                "first_frame": frame_id,
-                "last_frame": frame_id,
-                "first_frame_index": frame_index,
-                "last_frame_index": frame_index,
-                "first_time_sec": time_sec,
-                "last_time_sec": time_sec,
-                "matched_frame_count": 1,
-                "max_confidence": det["confidence"],
-                "max_bbox_area": det["bbox_area"],
-                "missing_frames": 0,
-                "state": "active",
-                "last_bbox": det["bbox_xyxy"],
-            }
-            append_jsonl(events_jsonl_path, {
-                "event": "track_started",
-                "track_id": track_id,
-                "frame_id": frame_id,
-                "frame_index": frame_index,
-                "time_sec": time_sec,
-            })
-            append_jsonl(tracks_jsonl_path, {
-                "frame_id": frame_id,
-                "frame_index": frame_index,
-                "time_sec": time_sec,
-                "track_id": track_id,
-                "det_id": det["det_id"],
-                "class_id": det["class_id"],
-                "class_name": det["class_name"],
-                "confidence": det["confidence"],
-                "bbox_xyxy": det["bbox_xyxy"],
-                "state": "active",
-                "counted": False,
-            })
+            start_new_track(
+                active_tracks,
+                events_jsonl_path,
+                tracks_jsonl_path,
+                frame_track_assignments,
+                frame_id,
+                frame_index,
+                time_sec,
+                det,
+                track_id,
+            )
 
-        ended_now = []
-        for track_id, track in active_tracks.items():
-            if track_id in matched_track_ids:
-                continue
-            if track_id in new_track_ids:
-                continue
-            track["missing_frames"] += 1
-            if track["missing_frames"] == 1 and track["state"] != "lost":
-                track["state"] = "lost"
-                append_jsonl(events_jsonl_path, {
-                    "event": "track_lost",
-                    "track_id": track_id,
-                    "frame_id": frame_id,
-                    "frame_index": frame_index,
-                    "time_sec": time_sec,
-                })
-            if track["missing_frames"] > args.max_missing_frames:
-                track["state"] = "ended"
-                append_jsonl(events_jsonl_path, {
-                    "event": "track_ended",
-                    "track_id": track_id,
-                    "frame_id": frame_id,
-                    "frame_index": frame_index,
-                    "time_sec": time_sec,
-                })
-                ended_now.append(track_id)
-
+        ended_now = finalize_unmatched_tracks(
+            active_tracks,
+            matched_track_ids,
+            new_track_ids,
+            events_jsonl_path,
+            frame_id,
+            frame_index,
+            time_sec,
+            args.max_missing_frames,
+        )
         for track_id in ended_now:
             ended_tracks.append(active_tracks.pop(track_id))
 
@@ -448,25 +635,18 @@ def run_track(args):
                     text_run = f"track: {run_id} frame: {frame_id} t={time_sec:.2f}s"
                     cv2.putText(img, text_run, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 4, cv2.LINE_AA)
                     cv2.putText(img, text_run, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
-                    matched_by_det_id = {}
-                    for track_id, det_idx, _ in matches:
-                        matched_by_det_id[frame_detections[det_idx]["det_id"]] = track_id
-                    for det_idx, det in enumerate(frame_detections):
-                        if det["det_id"] in matched_by_det_id:
-                            track_id = matched_by_det_id[det["det_id"]]
-                        else:
-                            track_id = None
-                            for candidate_track_id, track in active_tracks.items():
-                                if (
-                                    track["last_frame"] == frame_id
-                                    and track["class_id"] == det["class_id"]
-                                    and track["last_bbox"] == det["bbox_xyxy"]
-                                ):
-                                    track_id = candidate_track_id
-                                    break
+                    for det in frame_detections:
+                        assignment = frame_track_assignments.get(det["det_id"])
+                        track_id = assignment["track_id"] if assignment else None
+                        match_stage = assignment["match_stage"] if assignment else None
                         x1, y1, x2, y2 = [int(round(v)) for v in det["bbox_xyxy"]]
                         cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                        label = f"T{track_id} [{det['det_id']}] {det['class_name']} {det['confidence']:.2f}" if track_id else f"[{det['det_id']}] {det['class_name']} {det['confidence']:.2f}"
+                        if track_id is not None:
+                            label = f"T{track_id} [{det['det_id']}] {det['class_name']} {det['confidence']:.2f}"
+                            if match_stage:
+                                label += f" {match_stage}"
+                        else:
+                            label = f"[{det['det_id']}] {det['class_name']} {det['confidence']:.2f}"
                         (lbl_w, lbl_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
                         y_text = y1 - 4
                         if y_text - lbl_h < 0:
@@ -521,6 +701,7 @@ def run_track(args):
             "last_time_sec": track["last_time_sec"],
             "duration_sec": track["last_time_sec"] - track["first_time_sec"],
             "matched_frame_count": track["matched_frame_count"],
+            "low_score_match_count": track["low_score_match_count"],
             "max_confidence": track["max_confidence"],
             "max_bbox_area": track["max_bbox_area"],
             "counted": False,
@@ -536,20 +717,28 @@ def run_track(args):
         "frame_count": frame_count,
         "detection_count": payload["detection_count"],
         "track_count": track_count,
-        "conf": args.conf if args.conf is not None else 0.25,
+        "conf": args.conf,
+        "effective_conf": effective_conf,
         "imgsz": args.imgsz,
         "save_overlays": args.save_overlays,
         "classes": [item.strip() for item in args.classes.split(",") if item.strip()] if args.classes else [],
         "filters": {
             "min_box_width": args.min_box_width,
+            "max_box_width": args.max_box_width,
             "min_box_height": args.min_box_height,
+            "max_box_height": args.max_box_height,
             "min_box_area": args.min_box_area,
+            "max_box_area": args.max_box_area,
             "roi": roi,
         },
         "tracker": {
             "type": args.tracker,
             "iou_threshold": args.iou_threshold,
             "max_missing_frames": args.max_missing_frames,
+            "track_high_threshold": args.track_high_threshold,
+            "track_low_threshold": args.track_low_threshold,
+            "new_track_threshold": args.new_track_threshold,
+            "class_agnostic_tracking": args.class_agnostic_tracking,
         },
         "timing": payload["timing"],
     }
@@ -591,6 +780,7 @@ def run_track(args):
         print(f"Frame Count:     {payload['frame_count']}")
         print(f"Detections:      {payload['detection_count']}")
         print(f"Track Count:     {payload['track_count']}")
+        print(f"Tracker:         {args.tracker}")
         print(f"Manifest Path:   {payload['manifest_path']}")
         print(f"Tracks JSONL:    {payload['tracks_jsonl_path']}")
         if payload["overlays_dir"]:
@@ -612,15 +802,22 @@ def main():
     parser.add_argument("--input", required=True, help="Path to input image directory")
     parser.add_argument("--fps", required=True, type=float, help="Frame rate represented by the image sequence")
     parser.add_argument("--out", required=True, help="Path to output run directory")
-    parser.add_argument("--conf", type=float, help="Optional confidence threshold")
+    parser.add_argument("--conf", type=float, help="Optional detector confidence threshold")
     parser.add_argument("--imgsz", type=int, help="Optional inference image size")
     parser.add_argument("--classes", help="Comma-separated class names or IDs to keep")
     parser.add_argument("--min-box-width", type=float, help="Minimum bbox width in pixels")
+    parser.add_argument("--max-box-width", type=float, help="Maximum bbox width in pixels")
     parser.add_argument("--min-box-height", type=float, help="Minimum bbox height in pixels")
+    parser.add_argument("--max-box-height", type=float, help="Maximum bbox height in pixels")
     parser.add_argument("--min-box-area", type=float, help="Minimum bbox area in pixels")
+    parser.add_argument("--max-box-area", type=float, help="Maximum bbox area in pixels")
     parser.add_argument("--roi", help="Optional ROI x1,y1,x2,y2")
     parser.add_argument("--save-overlays", choices=["all", "none"], default="all", help="Overlay saving mode")
-    parser.add_argument("--tracker", choices=["simple"], default="simple", help="Tracker type")
+    parser.add_argument("--tracker", choices=["simple", "bytetrack"], default="simple", help="Tracker type")
+    parser.add_argument("--track-high-threshold", type=float, default=0.25, help="High-score threshold for ByteTrack matching")
+    parser.add_argument("--track-low-threshold", type=float, default=0.1, help="Low-score threshold for ByteTrack recovery")
+    parser.add_argument("--new-track-threshold", type=float, default=0.25, help="Minimum score for starting a new ByteTrack track")
+    parser.add_argument("--class-agnostic-tracking", action="store_true", help="Allow IoU matching across class IDs")
     parser.add_argument("--iou-threshold", type=float, default=0.3, help="IoU threshold for track matching")
     parser.add_argument("--max-missing-frames", type=int, default=5, help="Frames to keep unmatched tracks alive")
     parser.add_argument("--force", action="store_true", help="Overwrite existing output directory")

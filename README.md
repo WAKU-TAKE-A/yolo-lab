@@ -151,7 +151,15 @@ YOLO から COCO へ変換:
 .\.venv\Scripts\python.exe .\ai-track.py --model .\models\standard\yolov8s-seg.pt --input .\samples\002 --fps 5 --out .\runs\track_002 --conf 0.25 --classes truck,refrigerator --min-box-width 500 --json
 ```
 
-`ai-track.py` の初期版は動画ファイルを直接読むのではなく、既に切り出された画像連番と `--fps` を入力にします。結果は `manifest.json`, `detections.jsonl`, `tracks.jsonl`, `events.jsonl`, `track_summary.json`, `overlays/` に保存されます。
+ByteTrack-style backend を使う:
+
+```powershell
+.\.venv\Scripts\python.exe .\ai-track.py --model .\models\standard\yolov8s-seg.pt --input .\samples\004 --fps 5 --out .\runs\track_004_bytetrack --tracker bytetrack --track-low-threshold 0.1 --track-high-threshold 0.25 --new-track-threshold 0.25 --classes truck,bus,tv --json
+```
+
+`ai-track.py` は動画ファイルを直接読むのではなく、既に切り出された画像連番と `--fps` を入力にします。結果は `manifest.json`, `detections.jsonl`, `tracks.jsonl`, `events.jsonl`, `track_summary.json`, `overlays/` に保存されます。`--tracker simple` に加えて `--tracker bytetrack` が使え、bbox の `--min-*` と `--max-*` フィルタ、`--classes`、`--roi` で検出を絞れます。
+
+ByteTrack-style matching は track continuity を改善しますが、誤ったクラスラベル自体を直すわけではありません。クラス揺れが強い場面では `--classes` で対象を狭めると扱いやすくなります。
 
 ## 評価結果の考え方
 

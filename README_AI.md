@@ -419,11 +419,18 @@ Arguments:
 --imgsz IMGSZ
 --classes CLASSES
 --min-box-width MIN_BOX_WIDTH
+--max-box-width MAX_BOX_WIDTH
 --min-box-height MIN_BOX_HEIGHT
+--max-box-height MAX_BOX_HEIGHT
 --min-box-area MIN_BOX_AREA
+--max-box-area MAX_BOX_AREA
 --roi ROI
 --save-overlays all|none
---tracker simple
+--tracker simple|bytetrack
+--track-high-threshold TRACK_HIGH_THRESHOLD
+--track-low-threshold TRACK_LOW_THRESHOLD
+--new-track-threshold NEW_TRACK_THRESHOLD
+--class-agnostic-tracking
 --iou-threshold IOU_THRESHOLD
 --max-missing-frames MAX_MISSING_FRAMES
 --force
@@ -434,6 +441,18 @@ Example:
 
 ```powershell
 .\.venv\Scripts\python.exe .\ai-track.py --model .\models\standard\yolov8s-seg.pt --input .\samples\002 --fps 5 --out .\runs\track_002 --conf 0.25 --classes truck,refrigerator --min-box-width 500 --json
+```
+
+ByteTrack-style example:
+
+```powershell
+.\.venv\Scripts\python.exe .\ai-track.py --model .\models\standard\yolov8s-seg.pt --input .\samples\004 --fps 5 --out .\runs\track_004_bytetrack --tracker bytetrack --track-low-threshold 0.1 --track-high-threshold 0.25 --new-track-threshold 0.25 --classes truck,bus,tv --json
+```
+
+Max bbox filter example:
+
+```powershell
+.\.venv\Scripts\python.exe .\ai-track.py --model .\models\standard\yolov8s-seg.pt --input .\samples\004 --fps 5 --out .\runs\track_004_filtered --tracker bytetrack --track-low-threshold 0.1 --track-high-threshold 0.25 --classes truck,bus,tv --min-box-width 250 --max-box-width 900 --json
 ```
 
 Output directory shape:
@@ -451,7 +470,12 @@ runs/track_002/
 Notes:
 
 - The first version expects an image sequence folder, not a video file.
-- The first version uses bbox tracking only, even when the model is segmentation-capable.
+- Tracking uses bbox continuity only, even when the detector is segmentation-capable.
+- `--tracker simple` does one IoU association pass across all kept detections.
+- `--tracker bytetrack` uses high-score matching first, then low-score recovery for existing tracks, and only starts new tracks from detections above `--new-track-threshold`.
+- When `--tracker bytetrack` is used and `--conf` is omitted, detector confidence automatically falls back to `--track-low-threshold`; the effective value is recorded in `manifest.json` as `effective_conf`.
+- `--min-*` and `--max-*` bbox filters are applied before tracking.
+- ByteTrack-style matching can improve continuity, but it does not solve wrong class labels by itself.
 - The first version does not automatically count line crossings; it provides `track_id` continuity and summaries for later counting logic.
 
 ## Validation Probe
