@@ -1,5 +1,6 @@
 @echo off
 setlocal
+cd /d "%~dp0"
 
 set "VENV_DIR=.venv"
 set "REQUIREMENTS=requirements.txt"
